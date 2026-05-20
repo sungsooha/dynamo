@@ -148,8 +148,11 @@ docker run -it --runtime nvidia --gpus all --network host --ipc=host \
   -v "${HF_CACHE_ROOT}:/hf-cache:ro" \
   -e HF_HOME=/hf-cache \
   -e HF_HUB_CACHE=/hf-cache/hub \
+  -e HF_MODULES_CACHE=/tmp/hf_modules \
   -e HF_HUB_OFFLINE=1 \
   -e TRANSFORMERS_OFFLINE=1 \
+  -e XDG_CACHE_HOME=/tmp/cache \
+  -e TORCH_EXTENSIONS_DIR=/tmp/torch_extensions \
   -e MODEL_PATH=/hf-cache/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844 \
   -e SERVED_MODEL_NAME=nemotron-ultra-ea \
   -e FRONTEND_PORT="${FRONTEND_PORT}" \

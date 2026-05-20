@@ -5,6 +5,9 @@ set -euo pipefail
 
 export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 export TRTLLM_NO_USAGE_STATS=1
+export HF_MODULES_CACHE="${HF_MODULES_CACHE:-/tmp/hf_modules}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/cache}"
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/tmp/torch_extensions}"
 
 FRONTEND_PORT="${FRONTEND_PORT:-18000}"
 DYN_DISCOVERY_BACKEND="${DYN_DISCOVERY_BACKEND:-file}"
@@ -26,7 +29,7 @@ export DYN_FILE_KV
 export DYN_SYSTEM_PORT
 export CUDA_VISIBLE_DEVICES="${DECODE_CVD}"
 
-mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_DIR}" "${HF_MODULES_CACHE}" "${XDG_CACHE_HOME}" "${TORCH_EXTENSIONS_DIR}"
 exec >"${LOG_DIR}/decode.log" 2>&1
 
 exec python3 -m dynamo.trtllm \
