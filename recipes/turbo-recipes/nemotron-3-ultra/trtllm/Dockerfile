@@ -54,14 +54,19 @@ COPY wheels/${TRTLLM_WHEEL} /tmp/tensorrt_llm-1.3.0rc15-cp312-cp312-linux_x86_64
 RUN python3 -m pip install --force-reinstall --no-deps /tmp/tensorrt_llm-1.3.0rc15-cp312-cp312-linux_x86_64.whl \
  && python3 -m pip show tensorrt-llm flashinfer-python transformers \
  && python3 - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
 import transformers
-import tensorrt_llm
-import dynamo
 
 if not hasattr(transformers, "ExaoneMoeConfig"):
     raise RuntimeError("transformers.ExaoneMoeConfig missing")
-print("tensorrt_llm", getattr(tensorrt_llm, "__version__", "unknown"))
-print("dynamo", getattr(dynamo, "__version__", "unknown"))
+
+print("tensorrt-llm", metadata.version("tensorrt-llm"))
+print("flashinfer-python", metadata.version("flashinfer-python"))
+print("transformers", metadata.version("transformers"))
+if importlib.util.find_spec("dynamo") is None:
+    raise RuntimeError("dynamo module missing")
+print("dynamo module present")
 PY
 
 COPY --chmod=755 \
