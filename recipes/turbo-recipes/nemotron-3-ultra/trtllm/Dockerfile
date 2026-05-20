@@ -23,6 +23,8 @@ ARG TRTLLM_WHEEL=app_tensorrt_llm/tensorrt_llm-1.3.0rc15-cp312-cp312-linux_x86_6
 FROM ${DONOR_IMAGE} AS donor
 FROM ${BASE_IMAGE}
 
+ARG TRTLLM_WHEEL=app_tensorrt_llm/tensorrt_llm-1.3.0rc15-cp312-cp312-linux_x86_64.whl
+
 USER root
 
 # The PR #14060 TensorRT-LLM wheel imports newer dependency surfaces than the
