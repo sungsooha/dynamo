@@ -7,7 +7,9 @@ export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 export TRTLLM_NO_USAGE_STATS=1
 
 FRONTEND_PORT="${FRONTEND_PORT:-18000}"
+DYN_DISCOVERY_BACKEND="${DYN_DISCOVERY_BACKEND:-file}"
 DYN_REQUEST_PLANE="${DYN_REQUEST_PLANE:-tcp}"
+DYN_EVENT_PLANE="${DYN_EVENT_PLANE:-zmq}"
 DYN_FILE_KV="${DYN_FILE_KV:-/tmp/dynamo_store_kv_trtllm_a9_${FRONTEND_PORT}}"
 DYN_SYSTEM_PORT="${DYN_SYSTEM_PORT:-19081}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-nemotron-ultra-ea}"
@@ -17,7 +19,9 @@ REASONING_PARSER="${REASONING_PARSER:-nemotron_nano}"
 PREFILL_ENGINE_ARGS="${PREFILL_ENGINE_ARGS:-/workspace/recipes/turbo-recipes/nemotron-3-ultra/trtllm/configs/prefill-reuseprobe.yaml}"
 LOG_DIR="${LOG_DIR:-/tmp/nemotron-ultra}"
 
+export DYN_DISCOVERY_BACKEND
 export DYN_REQUEST_PLANE
+export DYN_EVENT_PLANE
 export DYN_FILE_KV
 export DYN_SYSTEM_PORT
 export CUDA_VISIBLE_DEVICES="${PREFILL_CVD}"
@@ -26,8 +30,7 @@ mkdir -p "${LOG_DIR}"
 exec >"${LOG_DIR}/prefill.log" 2>&1
 
 exec python3 -m dynamo.trtllm \
-  --discovery-backend file \
-  --request-plane "${DYN_REQUEST_PLANE}" \
+  --discovery-backend "${DYN_DISCOVERY_BACKEND}" \
   --model-path "${MODEL_PATH}" \
   --served-model-name "${SERVED_MODEL_NAME}" \
   --extra-engine-args "${PREFILL_ENGINE_ARGS}" \
