@@ -1,0 +1,250 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Draft DynamoGraphDeployment for Nemotron-3-Ultra TRT-LLM derived TP4 1P+1D.
+#
+# Status: draft only. Direct Docker is the validated path. This DGD captures the
+# T5.4 bounded-reuse settings and needs K8s validation before production use.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nemotron-ultra-trtllm-prefill-config
+data:
+  config.yaml: |
+    backend: pytorch
+    tensor_parallel_size: 4
+    moe_expert_parallel_size: 1
+    enable_attention_dp: false
+    enable_chunked_prefill: true
+    max_batch_size: 1
+    max_seq_len: null
+    max_num_tokens: 4096
+    num_postprocess_workers: 0
+    trust_remote_code: true
+    kv_cache_config:
+      enable_block_reuse: true
+      max_tokens: null
+      max_attention_window: null
+      sink_token_length: null
+      free_gpu_memory_fraction: 0.35
+      host_cache_size: null
+      cross_kv_cache_fraction: null
+      secondary_offload_min_priority: null
+      event_buffer_max_size: 8192
+      attention_dp_events_gather_period_ms: 5
+      enable_partial_reuse: true
+      copy_on_partial_reuse: true
+      use_uvm: false
+      max_gpu_total_bytes: 0
+      iteration_stats_interval: 1
+      dtype: auto
+      mamba_state_cache_interval: 256
+      mamba_ssm_cache_dtype: float16
+      mamba_ssm_stochastic_rounding: true
+      mamba_ssm_philox_rounds: 5
+      tokens_per_block: 32
+      use_kv_cache_manager_v2: false
+      max_util_for_resume: 0.95
+    moe_config:
+      backend: TRTLLM
+      max_num_tokens: null
+      load_balancer: null
+      disable_finalize_fusion: false
+      use_low_precision_moe_combine: false
+    cache_transceiver_config:
+      backend: UCX
+      transceiver_runtime: CPP
+      max_tokens_in_buffer: 8192
+    cuda_graph_config:
+      batch_sizes: [1]
+      enable_padding: true
+      max_batch_size: 1
+    disable_overlap_scheduler: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nemotron-ultra-trtllm-decode-config
+data:
+  config.yaml: |
+    backend: pytorch
+    tensor_parallel_size: 4
+    moe_expert_parallel_size: 1
+    enable_attention_dp: false
+    enable_chunked_prefill: true
+    max_batch_size: 1
+    max_seq_len: null
+    max_num_tokens: 4096
+    num_postprocess_workers: 0
+    trust_remote_code: true
+    kv_cache_config:
+      enable_block_reuse: true
+      max_tokens: null
+      max_attention_window: null
+      sink_token_length: null
+      free_gpu_memory_fraction: 0.35
+      host_cache_size: null
+      cross_kv_cache_fraction: null
+      secondary_offload_min_priority: null
+      event_buffer_max_size: 8192
+      attention_dp_events_gather_period_ms: 5
+      enable_partial_reuse: true
+      copy_on_partial_reuse: true
+      use_uvm: false
+      max_gpu_total_bytes: 0
+      iteration_stats_interval: 1
+      dtype: auto
+      mamba_state_cache_interval: 256
+      mamba_ssm_cache_dtype: float16
+      mamba_ssm_stochastic_rounding: true
+      mamba_ssm_philox_rounds: 5
+      tokens_per_block: 32
+      use_kv_cache_manager_v2: false
+      max_util_for_resume: 0.95
+    moe_config:
+      backend: TRTLLM
+      max_num_tokens: null
+      load_balancer: null
+      disable_finalize_fusion: false
+      use_low_precision_moe_combine: false
+    cache_transceiver_config:
+      backend: UCX
+      transceiver_runtime: CPP
+      max_tokens_in_buffer: 8192
+    cuda_graph_config:
+      batch_sizes: [1]
+      enable_padding: true
+      max_batch_size: 1
+    disable_overlap_scheduler: false
+---
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: nemotron-ultra-trtllm-disagg
+spec:
+  backendFramework: trtllm
+  pvcs:
+    - name: model-cache
+      create: false
+  services:
+    Frontend:
+      componentType: frontend
+      replicas: 1
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - >-
+              python3 -m dynamo.frontend
+              --discovery-backend file
+              --router-mode kv
+              --router-kv-events
+              --kv-cache-block-size 32
+              --router-kv-overlap-score-weight 1.0
+              --router-temperature 0.0
+              --http-port 8000
+    TrtllmPrefillWorker:
+      componentType: worker
+      subComponentType: prefill
+      envFromSecret: hf-token-secret
+      replicas: 1
+      resources:
+        limits:
+          gpu: "4"
+        requests:
+          gpu: "4"
+      volumeMounts:
+        - name: model-cache
+          mountPoint: /opt/models
+      sharedMemory:
+        size: 64Gi
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520
+          env:
+            - name: HF_HOME
+              value: /opt/models
+            - name: MODEL_PATH
+              value: /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - name: ENGINE_ARGS
+              value: /opt/dynamo/configs/config.yaml
+            - name: TRTLLM_NO_USAGE_STATS
+              value: "1"
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - >-
+              python3 -m dynamo.trtllm
+              --discovery-backend file
+              --model-path "$MODEL_PATH"
+              --served-model-name nemotron-ultra-ea
+              --extra-engine-args "$ENGINE_ARGS"
+              --modality text
+              --disaggregation-mode prefill
+              --dyn-tool-call-parser nemotron_nano
+              --dyn-reasoning-parser nemotron_nano
+              --publish-events-and-metrics
+              --kv-block-size 32
+          volumeMounts:
+            - mountPath: /opt/dynamo/configs
+              name: nemotron-ultra-trtllm-prefill-config
+              readOnly: true
+        volumes:
+          - configMap:
+              name: nemotron-ultra-trtllm-prefill-config
+            name: nemotron-ultra-trtllm-prefill-config
+    TrtllmDecodeWorker:
+      componentType: worker
+      subComponentType: decode
+      envFromSecret: hf-token-secret
+      replicas: 1
+      resources:
+        limits:
+          gpu: "4"
+        requests:
+          gpu: "4"
+      volumeMounts:
+        - name: model-cache
+          mountPoint: /opt/models
+      sharedMemory:
+        size: 64Gi
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520
+          env:
+            - name: HF_HOME
+              value: /opt/models
+            - name: MODEL_PATH
+              value: /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - name: ENGINE_ARGS
+              value: /opt/dynamo/configs/config.yaml
+            - name: TRTLLM_NO_USAGE_STATS
+              value: "1"
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - >-
+              python3 -m dynamo.trtllm
+              --discovery-backend file
+              --model-path "$MODEL_PATH"
+              --served-model-name nemotron-ultra-ea
+              --extra-engine-args "$ENGINE_ARGS"
+              --modality text
+              --disaggregation-mode decode
+              --dyn-tool-call-parser nemotron_nano
+              --dyn-reasoning-parser nemotron_nano
+              --publish-events-and-metrics
+              --kv-block-size 32
+          volumeMounts:
+            - mountPath: /opt/dynamo/configs
+              name: nemotron-ultra-trtllm-decode-config
+              readOnly: true
+        volumes:
+          - configMap:
+              name: nemotron-ultra-trtllm-decode-config
+            name: nemotron-ultra-trtllm-decode-config

@@ -1,0 +1,49 @@
+backend: pytorch
+tensor_parallel_size: 4
+moe_expert_parallel_size: 1
+enable_attention_dp: false
+enable_chunked_prefill: true
+max_batch_size: 1
+max_seq_len: null
+max_num_tokens: 4096
+num_postprocess_workers: 0
+trust_remote_code: true
+kv_cache_config:
+  enable_block_reuse: true
+  max_tokens: null
+  max_attention_window: null
+  sink_token_length: null
+  free_gpu_memory_fraction: 0.35
+  host_cache_size: null
+  cross_kv_cache_fraction: null
+  secondary_offload_min_priority: null
+  event_buffer_max_size: 8192
+  attention_dp_events_gather_period_ms: 5
+  enable_partial_reuse: true
+  copy_on_partial_reuse: true
+  use_uvm: false
+  max_gpu_total_bytes: 0
+  iteration_stats_interval: 1
+  dtype: auto
+  mamba_state_cache_interval: 256
+  mamba_ssm_cache_dtype: float16
+  mamba_ssm_stochastic_rounding: true
+  mamba_ssm_philox_rounds: 5
+  tokens_per_block: 32
+  use_kv_cache_manager_v2: false
+  max_util_for_resume: 0.95
+moe_config:
+  backend: TRTLLM
+  max_num_tokens: null
+  load_balancer: null
+  disable_finalize_fusion: false
+  use_low_precision_moe_combine: false
+cache_transceiver_config:
+  backend: UCX
+  transceiver_runtime: CPP
+  max_tokens_in_buffer: 8192
+cuda_graph_config:
+  batch_sizes: [1]
+  enable_padding: true
+  max_batch_size: 1
+disable_overlap_scheduler: false

@@ -1,0 +1,218 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Draft DynamoGraphDeployment for Nemotron-3-Ultra SGLang TP4/EP4 1P+1D.
+#
+# Status: draft only. The B200 evidence was collected with direct Docker and
+# the launch_*.sh scripts in ../. This DGD captures the same Dynamo/SGLang
+# arguments so the Kubernetes recipe work is explicit, but it still needs
+# cluster validation with the Dynamo operator, imagePullSecrets, PVC layout, and
+# node labels used by the target cluster.
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: nemotron-ultra-sglang-disagg
+spec:
+  backendFramework: sglang
+  envs:
+    - name: HF_HOME
+      value: /opt/models
+    - name: SGLANG_DISABLE_DEEP_GEMM
+      value: "1"
+    - name: SGLANG_APPLY_CONFIG_BACKUP
+      value: none
+  pvcs:
+    - name: model-cache
+      create: false
+  services:
+    Frontend:
+      componentType: frontend
+      replicas: 1
+      volumeMounts:
+        - name: model-cache
+          mountPoint: /opt/models
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-sglang-1.2.0-dev3-sglang-nightly-cu13-20260519-dbac4647-flashinfer-trtllm
+          command:
+            - python3
+          args:
+            - -m
+            - dynamo.frontend
+            - --discovery-backend
+            - etcd
+            - --request-plane
+            - tcp
+            - --event-plane
+            - zmq
+            - --router-mode
+            - kv
+            - --router-kv-events
+            - --http-port
+            - "8000"
+    prefill:
+      componentType: worker
+      subComponentType: prefill
+      envFromSecret: hf-token-secret
+      replicas: 1
+      resources:
+        limits:
+          gpu: "4"
+        requests:
+          gpu: "4"
+      volumeMounts:
+        - name: model-cache
+          mountPoint: /opt/models
+      sharedMemory:
+        size: 64Gi
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-sglang-1.2.0-dev3-sglang-nightly-cu13-20260519-dbac4647-flashinfer-trtllm
+          workingDir: /workspace
+          command:
+            - python3
+            - -m
+            - dynamo.sglang
+          args:
+            - --discovery-backend
+            - etcd
+            - --request-plane
+            - tcp
+            - --event-plane
+            - zmq
+            - --model-path
+            - /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - --served-model-name
+            - nemotron-ultra-ea
+            - --tp-size
+            - "4"
+            - --ep-size
+            - "4"
+            - --trust-remote-code
+            - --host
+            - 0.0.0.0
+            - --context-length
+            - "65536"
+            - --mem-fraction-static
+            - "0.85"
+            - --chunked-prefill-size
+            - "32768"
+            - --mamba-scheduler-strategy
+            - no_buffer
+            - --fp8-gemm-backend
+            - triton
+            - --fp4-gemm-backend
+            - auto
+            - --moe-a2a-backend
+            - none
+            - --moe-runner-backend
+            - flashinfer_trtllm
+            - --enable-metrics
+            - --dyn-tool-call-parser
+            - qwen3_coder
+            - --dyn-reasoning-parser
+            - nemotron3
+            - --disaggregation-mode
+            - prefill
+            - --disaggregation-bootstrap-port
+            - "12345"
+            - --disaggregation-transfer-backend
+            - nixl
+            - --port
+            - "40000"
+            - --kv-events-config
+            - '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5557"}'
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+          volumeMounts:
+            - mountPath: /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer
+              name: flashinfer-cubins
+        volumes:
+          - name: flashinfer-cubins
+            emptyDir:
+              medium: Memory
+    decode:
+      componentType: worker
+      subComponentType: decode
+      envFromSecret: hf-token-secret
+      replicas: 1
+      resources:
+        limits:
+          gpu: "4"
+        requests:
+          gpu: "4"
+      volumeMounts:
+        - name: model-cache
+          mountPoint: /opt/models
+      sharedMemory:
+        size: 64Gi
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-sglang-1.2.0-dev3-sglang-nightly-cu13-20260519-dbac4647-flashinfer-trtllm
+          workingDir: /workspace
+          command:
+            - python3
+            - -m
+            - dynamo.sglang
+          args:
+            - --discovery-backend
+            - etcd
+            - --request-plane
+            - tcp
+            - --event-plane
+            - zmq
+            - --model-path
+            - /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - --served-model-name
+            - nemotron-ultra-ea
+            - --tp-size
+            - "4"
+            - --ep-size
+            - "4"
+            - --trust-remote-code
+            - --host
+            - 0.0.0.0
+            - --context-length
+            - "65536"
+            - --mem-fraction-static
+            - "0.85"
+            - --chunked-prefill-size
+            - "32768"
+            - --mamba-scheduler-strategy
+            - no_buffer
+            - --fp8-gemm-backend
+            - triton
+            - --fp4-gemm-backend
+            - auto
+            - --moe-a2a-backend
+            - none
+            - --moe-runner-backend
+            - flashinfer_trtllm
+            - --enable-metrics
+            - --dyn-tool-call-parser
+            - qwen3_coder
+            - --dyn-reasoning-parser
+            - nemotron3
+            - --disaggregation-mode
+            - decode
+            - --disaggregation-bootstrap-port
+            - "12345"
+            - --disaggregation-transfer-backend
+            - nixl
+            - --port
+            - "40001"
+            - --kv-events-config
+            - '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5560"}'
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+          volumeMounts:
+            - mountPath: /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer
+              name: flashinfer-cubins
+        volumes:
+          - name: flashinfer-cubins
+            emptyDir:
+              medium: Memory
