@@ -145,7 +145,11 @@ docker run -it --runtime nvidia --gpus all --network host --ipc=host \
   --shm-size 64g \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
+  --user "$(id -u):$(id -g)" \
   -v "${HF_CACHE_ROOT}:/hf-cache:ro" \
+  -e HOME=/tmp \
+  -e USER="$(id -un)" \
+  -e LOGNAME="$(id -un)" \
   -e HF_HOME=/hf-cache \
   -e HF_HUB_CACHE=/hf-cache/hub \
   -e HF_MODULES_CACHE=/tmp/hf_modules \
