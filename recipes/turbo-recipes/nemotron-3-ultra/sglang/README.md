@@ -67,6 +67,12 @@ Keep a writable FlashInfer cubin tmpfs when running as a non-root host user:
 | Mamba scheduler | `no_buffer` |
 | Transfer | NIXL |
 
+SGLang model registration can spend a long interval in FlashInfer TRTLLM
+autotune after health is available. Validation harnesses should use an extended
+model-registration timeout and should not classify the run as an etcd/keepalive
+failure unless registration happened and then disappeared. The phase-0 retry
+used a 2400s model-registration window.
+
 Direct-Docker launch scripts:
 
 ```text
@@ -128,6 +134,11 @@ bash /workspace/recipes/turbo-recipes/nemotron-3-ultra/sglang/launch_decode.sh &
 bash /workspace/recipes/turbo-recipes/nemotron-3-ultra/sglang/launch_frontend.sh &
 ```
 
+Before sending chat, A7, AIPerf, or Mooncake traffic, require more than
+`/v1/models`: the frontend logs must show a non-prefill `dynamo` worker set, or
+equivalent worker/decode readiness evidence. Then run exact short chat and
+strict A7 with raw request/response plus usage.
+
 The worker scripts expand to:
 
 ```bash
@@ -176,8 +187,13 @@ for replay on another cluster.
 | Dynamo TP4/EP4 single-worker | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a5_dynamo_sglang_derived_etcd_tp4_ep4_a7_extended_20260519T151244Z` |
 | A9 P/D + strict A7 + KV reuse | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_sglang_tp4_1p1d_etcd_kv_reuse_20260520T073730Z` |
 | A10 mini AIPerf | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a10_sglang_mini_aiperf_20260520T182601Z` |
+| A11 filtered Mooncake chat practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_sglang_chat_filtered_20260521T165317Z` |
+| A11 filtered Mooncake SWE practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_sglang_swe_filtered_20260521T170157Z` |
 
 A9 reuse was verified by positive metrics:
 `dynamo_frontend_cached_tokens_sum=65536.0`,
 `dynamo_component_router_kv_hit_rate_sum=3.99970017240087`, and
 `dynamo_component_kv_cache_events_applied=40029.0`.
+
+A11 practice used filtered traces only and one fresh server per workload. Both
+chat and SWE had `request_errors=0` and `verified_by_metrics` cache evidence.

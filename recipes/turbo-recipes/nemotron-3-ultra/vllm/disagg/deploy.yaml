@@ -128,7 +128,7 @@ spec:
                 - IPC_LOCK
                 - SYS_RESOURCE
           volumeMounts:
-            - mountPath: /opt/dynamo/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins/flashinfer
+            - mountPath: /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer
               name: flashinfer-cubins
         volumes:
           - name: flashinfer-cubins
@@ -211,7 +211,7 @@ spec:
                 - IPC_LOCK
                 - SYS_RESOURCE
           volumeMounts:
-            - mountPath: /opt/dynamo/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins/flashinfer
+            - mountPath: /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer
               name: flashinfer-cubins
         volumes:
           - name: flashinfer-cubins

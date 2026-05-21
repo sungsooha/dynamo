@@ -133,6 +133,13 @@ spec:
       extraPodSpec:
         mainContainer:
           image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520
+          env:
+            - name: DYN_DISCOVERY_BACKEND
+              value: file
+            - name: DYN_REQUEST_PLANE
+              value: tcp
+            - name: DYN_EVENT_PLANE
+              value: zmq
           command:
             - /bin/sh
             - -c
@@ -173,6 +180,18 @@ spec:
               value: /opt/dynamo/configs/config.yaml
             - name: TRTLLM_NO_USAGE_STATS
               value: "1"
+            - name: DYN_DISCOVERY_BACKEND
+              value: file
+            - name: DYN_REQUEST_PLANE
+              value: tcp
+            - name: DYN_EVENT_PLANE
+              value: zmq
+            - name: HF_MODULES_CACHE
+              value: /tmp/hf_modules
+            - name: XDG_CACHE_HOME
+              value: /tmp/cache
+            - name: TORCH_EXTENSIONS_DIR
+              value: /tmp/torch_extensions
           command:
             - /bin/sh
             - -c
@@ -224,6 +243,18 @@ spec:
               value: /opt/dynamo/configs/config.yaml
             - name: TRTLLM_NO_USAGE_STATS
               value: "1"
+            - name: DYN_DISCOVERY_BACKEND
+              value: file
+            - name: DYN_REQUEST_PLANE
+              value: tcp
+            - name: DYN_EVENT_PLANE
+              value: zmq
+            - name: HF_MODULES_CACHE
+              value: /tmp/hf_modules
+            - name: XDG_CACHE_HOME
+              value: /tmp/cache
+            - name: TORCH_EXTENSIONS_DIR
+              value: /tmp/torch_extensions
           command:
             - /bin/sh
             - -c

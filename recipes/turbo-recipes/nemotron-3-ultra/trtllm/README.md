@@ -133,6 +133,21 @@ Direct-Docker launch scripts in this directory encode the same contract:
 /workspace/recipes/turbo-recipes/nemotron-3-ultra/trtllm/launch_decode.sh
 ```
 
+The TRT-LLM direct-Docker path must keep the passing A9 launch-plane contract:
+
+```text
+DYN_DISCOVERY_BACKEND=file
+DYN_REQUEST_PLANE=tcp
+DYN_EVENT_PLANE=zmq
+```
+
+Do not pass `--request-plane` on the frontend or TRT-LLM CLI for this recipe;
+the scripts export the environment variables and pass only
+`--discovery-backend`. This mirrors the T5.4 evidence path. Validation harnesses
+that launch TRT from a shared helper must preserve `DYN_DISCOVERY_BACKEND=file`;
+defaulting TRT to etcd causes the frontend to look for an invalid etcd endpoint
+and blocks readiness.
+
 Start the derived image:
 
 ```bash
@@ -166,6 +181,32 @@ docker run -it --runtime nvidia --gpus all --network host --ipc=host \
   "${IMAGE}"
 ```
 
+Run the container as the host UID/GID when the HF cache is mounted read-only.
+The image's default `dynamo` user may not be able to traverse site-local cache
+permissions. Keep writable scratch paths for dynamic HF modules and extension
+builds:
+
+```text
+--user "$(id -u):$(id -g)"
+-e HOME=/tmp
+-e USER="$(id -un)"
+-e LOGNAME="$(id -un)"
+-e HF_MODULES_CACHE=/tmp/hf_modules
+-e XDG_CACHE_HOME=/tmp/cache
+-e TORCH_EXTENSIONS_DIR=/tmp/torch_extensions
+```
+
+Before sending traffic, prove worker readiness in addition to `/v1/models`:
+
+```text
+decode log: Registered endpoint dynamo.tensorrt_llm.generate
+or discovery tree: dynamo.tensorrt_llm.generate
+```
+
+Validation scripts should stage `a9_smoke_direct.sh`, `a7_feature_smoke.sh`,
+the KV router/reuse probes, and the TRT `a7_trtllm_reuseprobe` payload variant
+before GPU launch. If any validation asset is missing, fail before model load.
+
 Inside the container:
 
 ```bash
@@ -190,6 +231,8 @@ for replay on another cluster.
 | Derived image build/probe/push | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_trtllm_derived_dynamo_image_t2_4_donor_deps_20260520T091917Z` |
 | Derived T5.4 A9 bounded KV reuse | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_trtllm_derived_t5_tool256_reuseprobe_20260520T104249Z` |
 | A10 mini AIPerf | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a10_trtllm_derived_mini_aiperf_decode_ready_20260520T193311Z` |
+| A11 filtered Mooncake chat practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_trtllm_chat_filtered_20260521T171530Z` |
+| A11 filtered Mooncake SWE practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_trtllm_swe_filtered_20260521T172438Z` |
 
 T5.4 reuse evidence: `dynamo_frontend_cached_tokens_sum=12846.0`,
 `dynamo_component_router_kv_hit_rate_sum=3.980099502487562`, warmup
@@ -199,6 +242,10 @@ T5.4 reuse evidence: `dynamo_frontend_cached_tokens_sum=12846.0`,
 A10 passed as a client/tooling canary but cache verification remained
 `routing_only_not_cache_verified`. Treat TRT as viable but caveated until a
 larger-prefix/admission sweep gives stronger evidence.
+
+A11 filtered Mooncake practice passed as client-canary evidence with fresh
+server per workload and `verified_by_metrics` cache evidence. It is not an
+official throughput sweep or dashboard row.
 
 ## H200 Note
 

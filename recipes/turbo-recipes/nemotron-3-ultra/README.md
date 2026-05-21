@@ -50,6 +50,50 @@ endpoint smoke, strict A7 API checks, and KV-cache reuse diagnostics.
 
 Framework-specific replay notes are in `sglang/` and `trtllm/`.
 
+## Validation Gates
+
+Direct-Docker validation should not treat `/v1/models` alone as endpoint
+readiness. Require all of the following before sending benchmark or AIPerf
+traffic:
+
+- `/health` returns HTTP 200.
+- `/v1/models` exposes `nemotron-ultra-ea`.
+- The decode/backend worker is registered. For TRT-LLM this means the logs or
+  discovery tree contain `dynamo.tensorrt_llm.generate`; for vLLM and SGLang it
+  means the frontend has added a non-prefill worker set for the `dynamo`
+  namespace.
+- A short exact-content chat request returns `disagg smoke ok` with numeric
+  usage.
+
+Strict A7 validation must preserve raw requests, raw responses, and usage for
+all payloads. HTTP 200 without semantic checks is not sufficient. Cache-reuse
+validation must use runtime metrics or request-time logs; startup-only
+publisher/router logs are not sufficient.
+
+## A11 Mooncake Practice
+
+Filtered Mooncake AIPerf practice canaries are supported by:
+
+```text
+scripts/a11_filtered_mooncake_practice_run.sh
+```
+
+Use filtered trace JSONL only. Do not run raw/unfiltered traces as AIPerf metric
+rows. For clean cache attribution, run one fresh server per backend/workload:
+for example vLLM chat, cleanup, vLLM SWE, cleanup, then repeat for SGLang and
+TRT-LLM. The helper requires `IMAGE`, `PREP_ARTIFACT`, `HF_CACHE_ROOT`, and
+`MODEL_VIEW_HOST` as explicit inputs so clean-checkout users choose either a
+locally-built recipe image or an accepted staging image. `EXPECTED_IMAGE_DIGEST`
+is optional and enforced when set. The runner records cache evidence from
+`/metrics` intervals and computes router hit-rate as:
+
+```text
+delta(dynamo_component_router_kv_hit_rate_sum)
+/ delta(dynamo_component_router_kv_hit_rate_count)
+```
+
+Do not report the `_sum` value alone as a percentage.
+
 ## Prerequisites
 
 1. Docker with NVIDIA runtime on an 8x B200 node.
@@ -322,4 +366,6 @@ recipes/turbo-recipes/nemotron-3-ultra/
     disagg/
       deploy.yaml
     configs/
+  scripts/
+    a11_filtered_mooncake_practice_run.sh
 ```
