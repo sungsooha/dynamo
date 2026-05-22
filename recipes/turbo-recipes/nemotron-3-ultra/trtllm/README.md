@@ -219,32 +219,27 @@ bash /workspace/recipes/turbo-recipes/nemotron-3-ultra/trtllm/launch_decode.sh &
 embedded as ConfigMaps. It is not a substitute for the direct-Docker evidence
 until validated through the target Dynamo operator and PVC layout.
 
-## Internal Evidence
+## Standalone Validation Summary
 
-These paths are from the original B200 reserved-node run and are not required
-for replay on another cluster.
+The original reserved-node artifact directories are internal. Use the results
+below as the portable acceptance summary and regenerate local artifacts on the
+target system.
 
-| Evidence | Artifact |
+| Gate | Standalone result |
 |---|---|
-| Official image TP4 single-worker | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a8_trtllm_tp4_single_worker_20260518T235518Z` |
-| Official image raw A7 | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a7_trtllm_tp4_rawio_token_freegpu_20260519T150338Z` |
-| Derived image build/probe/push | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_trtllm_derived_dynamo_image_t2_4_donor_deps_20260520T091917Z` |
-| Derived T5.4 A9 bounded KV reuse | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_trtllm_derived_t5_tool256_reuseprobe_20260520T104249Z` |
-| A10 mini AIPerf | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a10_trtllm_derived_mini_aiperf_decode_ready_20260520T193311Z` |
-| A11 filtered Mooncake chat practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_trtllm_chat_filtered_20260521T171530Z` |
-| A11 filtered Mooncake SWE practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_trtllm_swe_filtered_20260521T172438Z` |
-
-T5.4 reuse evidence: `dynamo_frontend_cached_tokens_sum=12846.0`,
-`dynamo_component_router_kv_hit_rate_sum=3.980099502487562`, warmup
-`4.068899s`, identical repeat `0.602096s`, and shared-prefix extension
-`0.542034s`.
+| Image identity | `nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520@sha256:7652b201b605ffd4a415c8205eebc694df30e19d7b188b2b72eafd6d068a4bf9` |
+| Build/probe | Derived Dynamo TRT image passed import/help/schema probes with TensorRT-LLM PR #14060 wheel and donor dependencies |
+| A9 bounded P/D smoke | TP4 `1P+1D`, `/health` PASS, `/v1/models` exposed `nemotron-ultra-ea`, exact short chat PASS, strict A7 5/5 PASS |
+| Bounded KV reuse | PASS by metrics: `dynamo_frontend_cached_tokens_sum +12846`, `dynamo_component_router_kv_hit_rate_sum +3.980099502487562`; warmup `4.068899s`, repeat `0.602096s`, extension `0.542034s` |
+| A10 mini shared-prefix | `c1/r8` output TPS `43.303`, `c2/r16` output TPS `74.111`, `0` request errors |
+| A11 filtered Mooncake practice | chat `req/s 0.0758`, output TPS `61.83`, router hit avg `34.4%`, cached tokens `+25920`, KV events applied `+652`; SWE `req/s 0.1526`, output TPS `55.67`, router hit avg `65.1%`, cached tokens `+70721`, KV events applied `+230`; both had `0` request errors |
 
 A10 passed as a client/tooling canary but cache verification remained
 `routing_only_not_cache_verified`. Treat TRT as viable but caveated until a
-larger-prefix/admission sweep gives stronger evidence.
+larger-prefix/admission sweep gives stronger cache evidence.
 
 A11 filtered Mooncake practice passed as client-canary evidence with fresh
-server per workload and `verified_by_metrics` cache evidence. It is not an
+server per workload and metric-observed routing/cache evidence. It is not an
 official throughput sweep or dashboard row.
 
 ## H200 Note

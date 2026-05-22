@@ -63,22 +63,22 @@ nemotron-3-ultra-sglang-turbo:dev
 nemotron-3-ultra-trtllm-turbo:dev
 
 # Phase-0 accepted staging images
-nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-vllm-pr9669-vllm0.21.0-kvpatch-20260520-mamba-hma-pr42430
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521
 nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-sglang-1.2.0-dev3-sglang-nightly-cu13-20260519-dbac4647-flashinfer-trtllm
 nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-trtllm-base501a580-pr14060-9c9cde-sm100-donordeps-20260520
 ```
 
 `VLLM_FLASHINFER_TMPFS` and `SGLANG_FLASHINFER_TMPFS` expose the image-specific
-FlashInfer cubin tmpfs mount paths. The vLLM Patch05 and SGLang recipe images
+FlashInfer cubin tmpfs mount paths. The vLLM Patch06+humming and SGLang recipe images
 use `/usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer`
 by default.
 
 Example:
 
 ```bash
-ARTIFACT_ROOT=/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_vllm_chat_filtered_<UTC>
-PREP_ARTIFACT=/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_aiperf_prep_20260521T144000Z
-HF_CACHE_ROOT=/home/scratch.sungsooh_coreai/llm-bench/models/.cache/huggingface
+ARTIFACT_ROOT=/path/to/writable/artifacts/ultra_a11_mooncake_vllm_chat_filtered_<UTC>
+PREP_ARTIFACT=/path/to/filtered-mooncake-prep-artifact
+HF_CACHE_ROOT=/path/to/huggingface-cache
 MODEL_VIEW_HOST="${HF_CACHE_ROOT}/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844"
 IMAGE=nemotron-3-ultra-vllm-turbo:dev
 

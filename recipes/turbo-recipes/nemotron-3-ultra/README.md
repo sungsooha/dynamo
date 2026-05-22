@@ -36,12 +36,14 @@ files are symlinks into `hub/blobs`.
 
 ## Available Configurations
 
-The current primary draft is vLLM Patch05 TP4 `1P+1D` because it passed B200
-endpoint smoke, strict A7 API checks, and KV-cache reuse diagnostics.
+The current primary draft is vLLM Patch06+humming TP4 `1P+1D` because it
+passed B200 endpoint smoke, strict A7 API checks, KV-cache reuse diagnostics,
+full filtered Mooncake replay, and 128K/256K context admission in direct
+Docker.
 
 | Configuration | GPUs | Backend | Mode | Description |
 |---|---:|---|---|---|
-| [**vllm/direct-1p1d**](vllm/) | 8x B200 | vLLM | Direct Docker P/D | TP4 prefill + TP4 decode, NIXL/HMA, KV-aware routing, strict A7 + KV reuse passed |
+| [**vllm/direct-1p1d**](vllm/) | 8x B200 | vLLM | Direct Docker P/D | Patch06+humming, TP4 prefill + TP4 decode, NIXL/HMA, KV-aware routing, strict A7 + KV reuse + full filtered Mooncake passed |
 | [**sglang/direct-1p1d**](sglang/) | 8x B200 | SGLang | Direct Docker P/D | TP4/EP4 prefill + decode, NIXL, KV reuse passed |
 | [**trtllm/direct-1p1d**](trtllm/) | 8x B200 | TensorRT-LLM | Direct Docker P/D | Bounded KV reuse diagnostic passed; A10 cache verification TBD |
 | `vllm/disagg-single-node` | TBD | vLLM | Kubernetes DGD | TBD production recipe |
@@ -98,8 +100,10 @@ Do not report the `_sum` value alone as a percentage.
 
 1. Docker with NVIDIA runtime on an 8x B200 node.
 2. HF cache containing the validated checkpoint and tokenizer-patched model view.
-3. For rebuilding the vLLM image, a local Dynamo vLLM `0.21.0` base image built
-   from the command sequence in [vllm/Dockerfile](vllm/Dockerfile).
+3. For vLLM, the current Dockerfile wraps the accepted Patch06+humming image
+   and embeds recipe launch scripts. The Patch06 source delta is checked in at
+   `vllm/patches/06_vllm_patch02_hash_block_event_port_after_pr42547.patch`
+   for audit and future source rebuild work.
 4. Kubernetes Dynamo platform, PVCs, and model-cache manifests: TBD for the
    production recipe. Draft DGD config exists for vLLM, SGLang, and TRT-LLM
    under each framework's `disagg/deploy.yaml`, but direct Docker remains the
@@ -107,10 +111,7 @@ Do not report the `_sum` value alone as a percentage.
 
 ## Build vLLM Image
 
-First build the local Dynamo vLLM `0.21.0` base image. The exact base creation
-commands are documented in the Dockerfile header.
-
-Then build the patched Ultra image from the Dynamo repo root:
+Build the current Patch06+humming wrapper image from the Dynamo repo root:
 
 ```bash
 docker build \
@@ -119,42 +120,18 @@ docker build \
   recipes/turbo-recipes/nemotron-3-ultra/vllm
 ```
 
-The Dockerfile applies five vLLM patches in order:
+Historical patch files are intentionally not carried in this recipe; use git
+history if they are needed. The accepted vLLM Patch06+humming image is:
 
 ```text
-01_vllm_pr40984.patch
-02_patch_c_v21_sub_block_emit.patch
-03_vllm_metadata_hash_block_size.patch
-04_vllm_mamba_hma_async_load_align_split.patch
-05_vllm_mamba_single_token_prefill_as_decode.patch
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521
+sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
 ```
 
-The B200 run pushed this already-built image for replay:
-
-```text
-nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-vllm-pr9669-vllm0.21.0-kvpatch-20260520-mamba-hma-pr42430
-sha256:017360cce7950f1b0ab4d8a8bd698945f0b3e88c51d1226d5940a3dcb00926a6
-```
-
-That pushed image was built before this checkpoint moved launch scripts under
-`vllm/`. To test the current script layout, rebuild `nemotron-3-ultra-vllm-turbo:dev`
-from this recipe or mount/copy the updated `vllm/launch_*.sh` files into the
-container.
-
-The updated `vllm/` script layout was reproduced by mounting the current
-`vllm/launch_*.sh` scripts into the pushed Patch05 image and rerunning A9:
-
-```text
-/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_recipe_vllm_repro_primary_20260520T213711Z
-```
-
-That run passed endpoint smoke, strict A7, and KV reuse with positive
-`dynamo_frontend_cached_tokens_sum` and router hit-rate metrics.
-
-`vllm/disagg/deploy.yaml` is a draft DGD capturing the same Patch05 CLI/env
-contract. It has not yet replaced the direct-Docker evidence path; validate
-operator schema, PVC model path, image pull, pod networking for NIXL/HMA, and
-FlashInfer cubin writeability before treating it as production.
+`vllm/disagg/deploy.yaml` is a draft DGD capturing the current Patch06+humming
+K8s no-hostpin smoke contract. It server-side dry-runs on
+`dynamo-nscale-dev-cluster/sungsooh-ultra`; live DGD retries still require
+explicit approval and must preserve one-live-object throttling.
 
 ## Run vLLM P/D Smoke
 
@@ -196,6 +173,7 @@ docker run -it --runtime nvidia --gpus all --network host --ipc=host \
   -e MODEL_PATH=/hf-cache/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844 \
   -e SERVED_MODEL_NAME=nemotron-ultra-ea \
   -e ETCD_ENDPOINTS="${ETCD_ENDPOINTS}" \
+  -e MAX_MODEL_LEN=262144 \
   --tmpfs /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer:rw,exec,mode=1777 \
   --entrypoint /bin/bash \
   "${IMAGE}"

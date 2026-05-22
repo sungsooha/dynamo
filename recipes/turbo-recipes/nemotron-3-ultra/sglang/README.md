@@ -176,24 +176,22 @@ Before treating it as production-ready, validate:
 - Dynamo operator schema compatibility for the explicit `--kv-events-config`
   and emptyDir mount
 
-## Internal Evidence
+## Standalone Validation Summary
 
-These paths are from the original B200 reserved-node run and are not required
-for replay on another cluster.
+The original reserved-node artifact directories are internal. Use the results
+below as the portable acceptance summary and regenerate local artifacts on the
+target system.
 
-| Evidence | Artifact |
+| Gate | Standalone result |
 |---|---|
-| Direct engine FlashInfer TRTLLM smoke | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a5_direct_sglang_nightly_cu13_flashinfer_trtllm_20260519T050744Z` |
-| Dynamo TP4/EP4 single-worker | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a5_dynamo_sglang_derived_etcd_tp4_ep4_a7_extended_20260519T151244Z` |
-| A9 P/D + strict A7 + KV reuse | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_sglang_tp4_1p1d_etcd_kv_reuse_20260520T073730Z` |
-| A10 mini AIPerf | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a10_sglang_mini_aiperf_20260520T182601Z` |
-| A11 filtered Mooncake chat practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_sglang_chat_filtered_20260521T165317Z` |
-| A11 filtered Mooncake SWE practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_sglang_swe_filtered_20260521T170157Z` |
+| Image identity | `nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-sglang-1.2.0-dev3-sglang-nightly-cu13-20260519-dbac4647-flashinfer-trtllm@sha256:11d2cc443a92250e9127f489ded01dbb370d9b25f4360a5a7008ded6225a66e9` |
+| A9 P/D smoke | TP4/EP4 `1P+1D`, `/health` PASS, `/v1/models` exposed `nemotron-ultra-ea`, exact short chat PASS |
+| Strict A7 | 5/5 PASS, all HTTP 2xx, JSON parse OK, usage present |
+| KV-aware routing / reuse | PASS by metrics: `dynamo_frontend_cached_tokens_sum +65536`, `dynamo_component_router_kv_hit_rate_sum +3.99970017240087`, `dynamo_component_kv_cache_events_applied +40029`; warmup/repeat ratio `6.69x` |
+| A10 mini shared-prefix | `c1/r8` output TPS `59.419`, `c2/r16` output TPS `111.664`, `0` request errors |
+| A11 filtered Mooncake practice | chat `req/s 0.1198`, output TPS `97.68`, router hit avg `34.6%`, KV events applied `+164143`; SWE `req/s 0.2428`, output TPS `88.58`, router hit avg `65.2%`, KV events applied `+57234`; both had `0` request errors |
 
-A9 reuse was verified by positive metrics:
-`dynamo_frontend_cached_tokens_sum=65536.0`,
-`dynamo_component_router_kv_hit_rate_sum=3.99970017240087`, and
-`dynamo_component_kv_cache_events_applied=40029.0`.
-
-A11 practice used filtered traces only and one fresh server per workload. Both
-chat and SWE had `request_errors=0` and `verified_by_metrics` cache evidence.
+Full official c32 filtered Mooncake replay is not yet a PASS for this SGLang
+image. A larger-load diagnostic reproduced a P/D bootstrap failure under trace
+load; continue from a newer SGLang image or an explicit backport plan before
+claiming full-trace readiness.

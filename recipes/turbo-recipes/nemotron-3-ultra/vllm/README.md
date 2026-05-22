@@ -5,10 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nemotron-3-Ultra vLLM Candidate Notes
 
-vLLM Patch05 is the primary phase-0 Ultra candidate. It passed B200 TP4
-`1P+1D` endpoint smoke, strict A7 API semantics, KV-router diagnostics,
-KV-cache reuse diagnostics, A10 mini AIPerf, and filtered Mooncake A11 practice
-canaries.
+vLLM Patch06+humming is the current phase-0 v2 Ultra candidate. It passed B200
+TP4 `1P+1D` endpoint smoke, strict A7 API semantics, KV-router diagnostics,
+KV-cache reuse diagnostics, full filtered Mooncake replay, and 128K/256K
+context admission in direct Docker.
 
 ## Image
 
@@ -21,23 +21,29 @@ docker build \
   recipes/turbo-recipes/nemotron-3-ultra/vllm
 ```
 
-The B200 run pushed the accepted Patch05 image:
+The B200 run pushed the accepted Patch06+humming image:
 
 ```text
-nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-dynamo-vllm-pr9669-vllm0.21.0-kvpatch-20260520-mamba-hma-pr42430
-sha256:017360cce7950f1b0ab4d8a8bd698945f0b3e88c51d1226d5940a3dcb00926a6
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521
+sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
 ```
 
-The Dockerfile applies patches `01` through `05` and verifies these markers:
+Patch06+humming provenance:
 
 ```text
-get_kv_cache_group_metadata
-hash_block_size
-kv_cache_spec_kind
-_maybe_emit_sub_block_events
-Patch-D-v21
-Patch-E-v21
+vLLM main: 1c78f76c29a642379ad0ec953a77af9bc44376b6
+PR #42554: 68dc38bcbac5004090939bbeb6bdcb9574379bb0
+PR #42547: 477556a47a77b85ad1797419c1fa370c0fae83a1
+Patch06: patches/06_vllm_patch02_hash_block_event_port_after_pr42547.patch
+Patch06 sha256: 9ffec3b72951a305f23d943ea5a1eb5faff5077e665b58200247fef6d00dbd30
+dependency: humming-kernels[cu13]==0.1.0
 ```
+
+Important: historical patch files are intentionally not carried in this recipe;
+use git history if they are needed. The current Patch06 source patch is checked
+into `patches/` for audit and future source rebuild work. The Dockerfile still
+wraps the accepted pushed Patch06+humming image because that is the validated
+runtime reproduction path for this checkpoint.
 
 ## Passing B200 Shape
 
@@ -47,7 +53,7 @@ Patch-E-v21
 | Prefill GPUs | `0,1,2,3` |
 | Decode GPUs | `4,5,6,7` |
 | Discovery | standalone etcd |
-| Context length | `65536` |
+| Context length | `262144` default; validated at `65536`, `131072`, and `262144` |
 | Max sequences | `16` |
 | Max batched tokens | `32768` |
 | Block size | `64` |
@@ -89,7 +95,7 @@ Prefill publishes KV events:
 ```
 
 Keep the FlashInfer cubin path writable if running with a non-root user. The
-Patch05 recipe image uses this path; if a rebuilt base moves site-packages,
+Patch06 recipe image uses this path; if a rebuilt base moves site-packages,
 override the validation helper with `VLLM_FLASHINFER_TMPFS` and mount that
 detected path instead:
 
@@ -110,15 +116,22 @@ disagg smoke ok
 Strict A7 must preserve raw requests, raw responses, and usage. KV reuse must
 be proved by runtime metrics or request-time logs, not startup-only logs.
 
-## Internal Evidence
+## Standalone Validation Summary
 
-| Evidence | Artifact |
+These are the public, reproducible acceptance facts for the current vLLM
+candidate. The original reserved-node artifact directories are internal and are
+not needed to replay the recipe.
+
+| Gate | Standalone result |
 |---|---|
-| A9 Patch05 P/D + strict A7 + KV reuse | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a9_vllm_pr42430_patch05_tp4_1p1d_strict_a7_20260520T071359Z` |
-| Recipe layout reproduction | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_recipe_vllm_e2e_build_launchscripts_20260520T223641Z` |
-| A10 mini AIPerf | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a10_vllm_mini_aiperf_20260520T181501Z` |
-| A11 filtered Mooncake chat practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_vllm_chat_filtered_20260521T163949Z` |
-| A11 filtered Mooncake SWE practice | `/home/scratch.sungsooh_coreai/nemotron-ultra/artifacts/ultra_a11_mooncake_vllm_swe_filtered_20260521T164649Z` |
+| Image identity | `nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337` |
+| A9 P/D smoke | TP4 `1P+1D`, `/health` PASS, `/v1/models` exposed `nemotron-ultra-ea`, exact short chat PASS |
+| Strict A7 | 5/5 PASS, all HTTP 2xx, JSON parse OK, usage present, tool call parsed `Santa Clara, CA`, low-effort reasoning produced final answer |
+| KV reuse | PASS by metrics: `dynamo_frontend_cached_tokens_sum +66560`, `dynamo_component_router_kv_hit_rate_sum +3.3226837060702876`; warmup `3.640718s`, repeat `0.634655s`, shared-prefix extension `0.607402s` |
+| Full filtered Mooncake chat | `1817` measured requests, `0` errors, `req/s 1.0294`, `avg ISL 14627.9`, `avg OSL 737.7`, `output TPS 759.40`, `TPS/GPU 94.92`, router hit avg `56.6%` |
+| Full filtered Mooncake SWE | `1973` measured requests, `0` errors, `req/s 1.9094`, `avg ISL 20476.1`, `avg OSL 348.3`, `output TPS 665.07`, `TPS/GPU 83.13`, router hit avg `81.3%` |
+| Context ladder | 128K PASS with `95986` prompt tokens, 256K PASS with `191986` prompt tokens |
 
-A11 practice used filtered traces only and one fresh server per workload. Both
-chat and SWE had `request_errors=0` and `verified_by_metrics` cache evidence.
+Replay should create a fresh artifact root on the target system and preserve
+`run_status.json`, `run_config.json`, `metrics.jsonl`, raw endpoint I/O, A7 raw
+requests/responses, KV metrics snapshots, and cleanup evidence.
