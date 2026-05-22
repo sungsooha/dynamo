@@ -143,6 +143,95 @@ paths.
 | Reasoning disabled | Same arithmetic prompt with thinking disabled | Content exactly `31`; usage present |
 | Low-effort budget | Same arithmetic prompt with low reasoning budget | Final answer contains `31`; completion tokens stayed below the full reasoning row |
 
+Raw request/response evidence from the accepted Patch06+humming P/D run is
+included below. The response snippets keep `finish_reason`, `message`, and
+`usage`; replay artifacts should preserve the full OpenAI response JSON.
+
+<details>
+<summary>Basic chat raw evidence</summary>
+
+Request:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":false,"force_nonempty_content":true},"max_tokens":16,"messages":[{"content":"Reply with exactly: feature smoke ok","role":"user"}],"model":"nemotron-ultra-ea","temperature":0}
+```
+
+Response:
+
+```json
+{"finish_reason":"stop","message":{"content":"feature smoke ok","role":"assistant"},"usage":{"completion_tokens":4,"prompt_tokens":23,"total_tokens":27}}
+```
+
+</details>
+
+<details>
+<summary>Tool-call raw evidence</summary>
+
+Request:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":true,"force_nonempty_content":true},"max_tokens":128,"messages":[{"content":"Call the get_current_weather tool for location exactly Santa Clara, CA. Do not answer in natural language.","role":"user"}],"model":"nemotron-ultra-ea","temperature":0,"tool_choice":"required","tools":[{"function":{"description":"Get current weather for a city.","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"type":"string"}},"required":["location"],"type":"object"},"strict":true},"type":"function"}]}
+```
+
+Response:
+
+```json
+{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"function":{"arguments":"{\"location\": \"Santa Clara, CA\"}","name":"get_current_weather"},"id":"call-0dad870c-8494-4b1d-bd33-9b32e57a971c","type":"function"}]},"usage":{"completion_tokens":57,"prompt_tokens":305,"total_tokens":362}}
+```
+
+</details>
+
+<details>
+<summary>Reasoning disabled raw evidence</summary>
+
+Request:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":false,"force_nonempty_content":true},"max_tokens":64,"messages":[{"content":"Answer with only the final integer: If x=7 and y=5, what is 3*x + 2*y?","role":"user"}],"model":"nemotron-ultra-ea","temperature":0}
+```
+
+Response:
+
+```json
+{"finish_reason":"stop","message":{"content":"31","role":"assistant"},"usage":{"completion_tokens":3,"prompt_tokens":42,"total_tokens":45}}
+```
+
+</details>
+
+<details>
+<summary>Reasoning enabled raw evidence</summary>
+
+Request:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":true,"force_nonempty_content":true},"max_tokens":128,"messages":[{"content":"Think carefully and answer with only the final integer: If x=7 and y=5, what is 3*x + 2*y?","role":"user"}],"model":"nemotron-ultra-ea","temperature":0}
+```
+
+Response:
+
+```json
+{"finish_reason":"length","message":{"content":"The user asks: \"Think carefully and answer with only the final integer: If x=7 and y=5, what is 3*x + 2*y?\"\n\nWe need to compute 3*7 + 2*5 = 21 + 10 = 31. The answer should be just the integer 31, no extra text.\n\nThe instruction: \"Think carefully and answer with only the final integer\". So we should output \"31\". Probably just \"31\". Ensure no extra spaces or punctuation? It says \"only the final integer\". So just \"31\". We'll output","role":"assistant"},"usage":{"completion_tokens":128,"prompt_tokens":45,"total_tokens":173}}
+```
+
+</details>
+
+<details>
+<summary>Low-effort reasoning budget raw evidence</summary>
+
+Request:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":true,"force_nonempty_content":true,"low_effort":true,"reasoning_effort":"low"},"max_tokens":128,"messages":[{"content":"Use the lowest reasoning effort. Then answer with only the final integer: If x=7 and y=5, what is 3*x + 2*y?","role":"user"}],"model":"nemotron-ultra-ea","reasoning_effort":"low","temperature":0}
+```
+
+Response:
+
+```json
+{"finish_reason":"stop","message":{"content":"We need to compute 3*x + 2*y with x=7, y=5. 3*7=21, 2*5=10, sum=31. Output only final integer: 31.</think>31","role":"assistant"},"usage":{"completion_tokens":54,"prompt_tokens":49,"total_tokens":103}}
+```
+
+</details>
+
 ## Mooncake Trace Benchmark Note
 
 The filtered Mooncake benchmark numbers below are **not** the 256K admission
@@ -158,16 +247,18 @@ fresh_server_per_workload: true
 trace_mode: mooncake-trace-filtered-slices
 ```
 
-`router hit avg` means
+`Dynamo router KV-hit avg` means
 `delta(dynamo_component_router_kv_hit_rate_sum) /
 delta(dynamo_component_router_kv_hit_rate_count)` over the measured tail
-interval. It is Dynamo router KV-hit evidence, not the raw trace target by
-itself.
+interval. It is Dynamo KV-router evidence from KV events and prefix matching,
+not a raw backend prefix-cache-hit counter. Cache reuse was also verified by
+positive `dynamo_frontend_cached_tokens_sum` and
+`dynamo_component_kv_cache_events_applied` deltas.
 
-| Benchmark type | Workload type | Requests | Errors | p50 ISL | p50 OSL | p50 TTFT ms | p50 ITL ms | p50 latency ms | p50 TPS/user | Aggregate output TPS | Aggregate TPS/GPU | Router hit avg |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Mooncake trace, filtered | Chat | 1817 | 0 | 5810 | 995 | 491.5 | 9.48 | 9828.0 | 105.44 | 759.40 | 94.92 | 56.6% |
-| Mooncake trace, filtered | SWE | 1973 | 0 | 18316 | 400 | 581.6 | 9.43 | 4141.4 | 106.08 | 665.07 | 83.13 | 81.3% |
+| Benchmark type | Workload type | Concurrency | Requests | Errors | p50 ISL | p50 OSL | p50 TTFT ms | p50 ITL ms | p50 latency ms | p50 TPS/user | Aggregate output TPS | Aggregate TPS/GPU | Dynamo router KV-hit avg | Cached tokens delta | KV events applied delta |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Mooncake trace, filtered | Chat | 8 | 1817 | 0 | 5810 | 995 | 491.5 | 9.48 | 9828.0 | 105.44 | 759.40 | 94.92 | 56.6% | 5491200 | 2945 |
+| Mooncake trace, filtered | SWE | 8 | 1973 | 0 | 18316 | 400 | 581.6 | 9.43 | 4141.4 | 106.08 | 665.07 | 83.13 | 81.3% | 20558720 | 2985 |
 
 Replay should create a fresh artifact root on the target system and preserve
 `run_status.json`, `run_config.json`, `metrics.jsonl`, raw endpoint I/O, A7 raw
