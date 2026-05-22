@@ -125,12 +125,49 @@ not needed to replay the recipe.
 | Gate | Standalone result |
 |---|---|
 | Image identity | `nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337` |
-| A9 P/D smoke | TP4 `1P+1D`, `/health` PASS, `/v1/models` exposed `nemotron-ultra-ea`, exact short chat PASS |
-| Strict A7 | 5/5 PASS, all HTTP 2xx, JSON parse OK, usage present, tool call parsed `Santa Clara, CA`, low-effort reasoning produced final answer |
-| KV reuse | PASS by metrics: `dynamo_frontend_cached_tokens_sum +66560`, `dynamo_component_router_kv_hit_rate_sum +3.3226837060702876`; warmup `3.640718s`, repeat `0.634655s`, shared-prefix extension `0.607402s` |
-| Full filtered Mooncake chat | `1817` measured requests, `0` errors, `req/s 1.0294`, `avg ISL 14627.9`, `avg OSL 737.7`, `output TPS 759.40`, `TPS/GPU 94.92`, router hit avg `56.6%` |
-| Full filtered Mooncake SWE | `1973` measured requests, `0` errors, `req/s 1.9094`, `avg ISL 20476.1`, `avg OSL 348.3`, `output TPS 665.07`, `TPS/GPU 83.13`, router hit avg `81.3%` |
-| Context ladder | 128K PASS with `95986` prompt tokens, 256K PASS with `191986` prompt tokens |
+| Primary functional target | 256K context admission PASS on TP4 `1P+1D`: `/health` PASS, `/v1/models` exposed `context_window=262144`, exact short chat PASS, strict A7 5/5 PASS, long-context probe used `191986` prompt tokens and returned usage `191986/4/191990` |
+| 128K control | PASS with `context_window=131072`; long-context probe used `95986` prompt tokens and returned usage `95986/4/95990` |
+| KV reuse control | PASS by metrics at the 65K smoke shape: `dynamo_frontend_cached_tokens_sum +66560`, `dynamo_component_router_kv_hit_rate_sum +3.3226837060702876`; warmup `3.640718s`, repeat `0.634655s`, shared-prefix extension `0.607402s` |
+
+## Functional API Smoke
+
+Strict A7 API smoke passed 5/5 on the current Patch06+humming P/D image. The
+table below captures the request/response contract without private artifact
+paths.
+
+| Check | Input contract | Required output |
+|---|---|---|
+| Basic chat | Ask for exact string `feature smoke ok` | Content exactly `feature smoke ok`; usage present |
+| Tool call | Weather tool request with `get_current_weather` available | `finish_reason=tool_calls`; parsed tool call `get_current_weather({"location":"Santa Clara, CA"})`; usage present |
+| Reasoning enabled | Arithmetic prompt: `If x=7 and y=5, what is 3*x + 2*y?` with thinking enabled | HTTP 200, JSON parse OK, usage present, response contains `31` |
+| Reasoning disabled | Same arithmetic prompt with thinking disabled | Content exactly `31`; usage present |
+| Low-effort budget | Same arithmetic prompt with low reasoning budget | Final answer contains `31`; completion tokens stayed below the full reasoning row |
+
+## Mooncake Trace Benchmark Note
+
+The filtered Mooncake benchmark numbers below are **not** the 256K admission
+run. They were collected at the 65K serving shape:
+
+```text
+server_shape_id: vllm_upstream_patch06_humming_recipe_tp4_1p1d_65k
+max_model_len: 65536
+max_num_seqs: 16
+max_batched_tokens: 32768
+concurrency: 8
+fresh_server_per_workload: true
+trace_mode: mooncake-trace-filtered-slices
+```
+
+`router hit avg` means
+`delta(dynamo_component_router_kv_hit_rate_sum) /
+delta(dynamo_component_router_kv_hit_rate_count)` over the measured tail
+interval. It is Dynamo router KV-hit evidence, not the raw trace target by
+itself.
+
+| Benchmark type | Workload type | Requests | Errors | p50 ISL | p50 OSL | p50 TTFT ms | p50 ITL ms | p50 latency ms | p50 TPS/user | Aggregate output TPS | Aggregate TPS/GPU | Router hit avg |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Mooncake trace, filtered | Chat | 1817 | 0 | 5810 | 995 | 491.5 | 9.48 | 9828.0 | 105.44 | 759.40 | 94.92 | 56.6% |
+| Mooncake trace, filtered | SWE | 1973 | 0 | 18316 | 400 | 581.6 | 9.43 | 4141.4 | 106.08 | 665.07 | 83.13 | 81.3% |
 
 Replay should create a fresh artifact root on the target system and preserve
 `run_status.json`, `run_config.json`, `metrics.jsonl`, raw endpoint I/O, A7 raw
