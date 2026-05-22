@@ -247,15 +247,21 @@ fresh_server_per_workload: true
 trace_mode: mooncake-trace-filtered-slices
 ```
 
-`Dynamo router KV-hit avg` means
-`delta(dynamo_component_router_kv_hit_rate_sum) /
-delta(dynamo_component_router_kv_hit_rate_count)` over the measured tail
-interval. It is Dynamo KV-router evidence from KV events and prefix matching,
-not a raw backend prefix-cache-hit counter. Cache reuse was also verified by
-positive `dynamo_frontend_cached_tokens_sum` and
-`dynamo_component_kv_cache_events_applied` deltas.
+Metric definitions:
 
-| Benchmark type | Workload type | Concurrency | Requests | Errors | p50 ISL | p50 OSL | p50 TTFT ms | p50 ITL ms | p50 latency ms | p50 TPS/user | Aggregate output TPS | Aggregate TPS/GPU | Dynamo router KV-hit avg | Cached tokens delta | KV events applied delta |
+- `Output TPS`: aggregate generated tokens per second across the whole server.
+- `Output TPS/GPU`: `Output TPS / 8`, because this run used one 8x B200 node.
+- `p50 TPS/user`: median per-request output-token throughput reported by
+  AIPerf.
+- `Router prefix-match avg`: Dynamo router's average matched-prefix ratio from
+  KV-event metadata over the measured interval. It is computed as
+  `delta(dynamo_component_router_kv_hit_rate_sum) /
+  delta(dynamo_component_router_kv_hit_rate_count)`. It is routing/cache
+  evidence, but it is not a raw backend prefix-cache-hit counter.
+- `Cached tokens delta` and `KV events applied delta`: positive metric deltas
+  proving that KV events and cached-token accounting moved during the benchmark.
+
+| Benchmark type | Workload type | Concurrency | Requests | Errors | p50 ISL | p50 OSL | p50 TTFT ms | p50 ITL ms | p50 latency ms | p50 TPS/user | Output TPS | Output TPS/GPU | Router prefix-match avg | Cached tokens delta | KV events applied delta |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Mooncake trace, filtered | Chat | 8 | 1817 | 0 | 5810 | 995 | 491.5 | 9.48 | 9828.0 | 105.44 | 759.40 | 94.92 | 56.6% | 5491200 | 2945 |
 | Mooncake trace, filtered | SWE | 8 | 1973 | 0 | 18316 | 400 | 581.6 | 9.43 | 4141.4 | 106.08 | 665.07 | 83.13 | 81.3% | 20558720 | 2985 |
