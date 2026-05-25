@@ -1,0 +1,175 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ultra-aiperf-agg1-swe-c27
+  labels:
+    app: ultra-aiperf-agg1-swe-c27
+    track: nemotron-ultra-phase0-v2-k8s
+    action-id: K8S_VLLM_PATCH06_AGG1_MOONTRACE_SWE_C27_256K_NEWPVC
+    stage: moontrace-swe-c27
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 28800
+  template:
+    metadata:
+      labels:
+        app: ultra-aiperf-agg1-swe-c27
+        track: nemotron-ultra-phase0-v2-k8s
+        action-id: K8S_VLLM_PATCH06_AGG1_MOONTRACE_SWE_C27_256K_NEWPVC
+        stage: moontrace-swe-c27
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: nvcr-secret
+      containers:
+        - name: aiperf-moontrace
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-aiperf-client-0.8.0-tokenizers-20260522T204015Z@sha256:ebbb3bf5e2e2c09f34e742db18ab7ef6cfb01721050aeec7a4a77473f53fb4d4
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+            limits:
+              cpu: "8"
+              memory: 32Gi
+          env:
+            - name: BASE_URL
+              value: http://ultra-vllm-p06h-agg1-swe-c27-frontend:8000
+            - name: MODEL
+              value: nemotron-ultra-ea
+            - name: TOKENIZER_PATH
+              value: /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - name: TRACE_FILE
+              value: /artifacts/trace_preflight/prep_swe_256k/filtered_traces/swe_maxlen262144_oslcap400_margin512.jsonl
+            - name: EXPECTED_TRACE_SHA256
+              value: 72d5c0333e70a639e58e6fc009936f611fd4ccbc1306f52864e05105cb12c123
+            - name: EXPECTED_REQUEST_COUNT
+              value: "22917"
+            - name: ARTIFACT_DIR
+              value: /artifacts/ultra-vllm-p06h-agg1-swe-c27-moontrace-swe-c27
+            - name: HF_HOME
+              value: /opt/models
+            - name: HF_HUB_CACHE
+              value: /opt/models/hub
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: HF_DATASETS_OFFLINE
+              value: "1"
+            - name: CONCURRENCY
+              value: "27"
+            - name: WORKERS_MAX
+              value: "27"
+            - name: CUSTOM_DATASET_TYPE
+              value: mooncake-trace
+            - name: PROMPT_INPUT_TOKENS_BLOCK_SIZE
+              value: "512"
+            - name: SYNTHESIS_MAX_ISL
+              value: "261232"
+            - name: SYNTHESIS_MAX_OSL
+              value: "400"
+            - name: CACHE_SALT_MODE
+              value: omit_fresh_dgd
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p "${ARTIFACT_DIR}/client_setup" "${ARTIFACT_DIR}/commands" "${ARTIFACT_DIR}/logs" "${ARTIFACT_DIR}/trace"
+              echo "AIPERF_AGG1_SWE_C27_BEGIN $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee "${ARTIFACT_DIR}/logs/run.log"
+              df -h /artifacts | tee "${ARTIFACT_DIR}/client_setup/df_h_before.txt"
+              df -Pk /artifacts | tee "${ARTIFACT_DIR}/client_setup/df_pk_before.txt"
+              test -r "${TRACE_FILE}"
+              sha256sum "${TRACE_FILE}" | tee "${ARTIFACT_DIR}/trace/trace.sha256"
+              actual_sha="$(awk '{print $1}' "${ARTIFACT_DIR}/trace/trace.sha256")"
+              test "${actual_sha}" = "${EXPECTED_TRACE_SHA256}"
+              request_count="$(wc -l <"${TRACE_FILE}" | tr -d ' ')"
+              test "${request_count}" = "${EXPECTED_REQUEST_COUNT}"
+              printf '%s\n' "${request_count}" | tee "${ARTIFACT_DIR}/trace/request_count.txt"
+              env | grep -E '^(BASE_URL|MODEL|TOKENIZER_PATH|TRACE_FILE|EXPECTED_TRACE_SHA256|EXPECTED_REQUEST_COUNT|ARTIFACT_DIR|CONCURRENCY|WORKERS_MAX|CUSTOM_DATASET_TYPE|PROMPT_INPUT_TOKENS_BLOCK_SIZE|SYNTHESIS_MAX_ISL|SYNTHESIS_MAX_OSL|CACHE_SALT_MODE|HF_HOME|HF_HUB_CACHE|HF_HUB_OFFLINE|TRANSFORMERS_OFFLINE|HF_DATASETS_OFFLINE)=' | sort | tee "${ARTIFACT_DIR}/run_env.txt"
+              python3 --version | tee "${ARTIFACT_DIR}/client_setup/python_version.txt"
+              python3 - <<'PYDEP' | tee "${ARTIFACT_DIR}/client_setup/dependency_versions.txt"
+              import importlib.metadata as md
+              for name in ["sentencepiece", "tiktoken", "regex", "requests", "tokenizers", "transformers"]:
+                  try:
+                      print(f"{name}=={md.version(name)}")
+                  except md.PackageNotFoundError:
+                      print(f"{name}=MISSING")
+              PYDEP
+              COLUMNS=240 aiperf profile --help >"${ARTIFACT_DIR}/client_setup/aiperf_profile_help.txt" 2>&1
+              grep -q -- 'mooncake-trace' "${ARTIFACT_DIR}/client_setup/aiperf_profile_help.txt"
+              tokenizer_smoke_ultra.sh >"${ARTIFACT_DIR}/client_setup/tokenizer_smoke.log" 2>&1
+              tail -n 20 "${ARTIFACT_DIR}/client_setup/tokenizer_smoke.log" | tee -a "${ARTIFACT_DIR}/logs/run.log"
+              if grep -q -- '--num-requests' "${ARTIFACT_DIR}/client_setup/aiperf_profile_help.txt"; then request_flag="--num-requests"; else request_flag="--request-count"; fi
+              python3 - <<'PYSCRIPT'
+              import os, pathlib, stat
+              script = pathlib.Path(os.environ["ARTIFACT_DIR"]) / "commands" / "run_aiperf_swe_c27.sh"
+              text = """#!/usr/bin/env bash
+              set -euo pipefail
+              args=(
+                profile
+                -m "${MODEL}"
+                -u "${BASE_URL}"
+                --endpoint v1/chat/completions
+                --endpoint-type chat
+                --streaming
+                --input-file "${TRACE_FILE}"
+                --custom-dataset-type "${CUSTOM_DATASET_TYPE}"
+                --dataset-sampling-strategy sequential
+                --concurrency "${CONCURRENCY}"
+                --workers-max "${WORKERS_MAX}"
+                --prompt-input-tokens-block-size "${PROMPT_INPUT_TOKENS_BLOCK_SIZE}"
+                --synthesis-max-isl "${SYNTHESIS_MAX_ISL}"
+                --synthesis-max-osl "${SYNTHESIS_MAX_OSL}"
+                --tokenizer "${TOKENIZER_PATH}"
+                --tokenizer-trust-remote-code
+                --extra-inputs ignore_eos:true
+                --use-server-token-count
+                --random-seed 42
+                --export-level records
+                --ui-type none
+                --no-server-metrics
+                --artifact-dir "${ARTIFACT_DIR}"
+              )
+              if [[ "${REQUEST_FLAG}" == "--num-requests" ]]; then
+                args+=(--num-requests "${REQUEST_COUNT}")
+              else
+                args+=(--request-count "${REQUEST_COUNT}")
+              fi
+              COLUMNS=240 exec aiperf "${args[@]}"
+              """
+              script.write_text(text.replace("              ", ""), encoding="utf-8", newline="\n")
+              script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+              PYSCRIPT
+              REQUEST_FLAG="${request_flag}" REQUEST_COUNT="${request_count}" bash -n "${ARTIFACT_DIR}/commands/run_aiperf_swe_c27.sh"
+              sed -n '1,180p' "${ARTIFACT_DIR}/commands/run_aiperf_swe_c27.sh" | tee "${ARTIFACT_DIR}/client_setup/run_script_preview.txt"
+              set +e
+              REQUEST_FLAG="${request_flag}" REQUEST_COUNT="${request_count}" bash "${ARTIFACT_DIR}/commands/run_aiperf_swe_c27.sh" 2>&1 | tee "${ARTIFACT_DIR}/logs/aiperf_profile.log"
+              rc=${PIPESTATUS[0]}
+              set -e
+              df -h /artifacts | tee "${ARTIFACT_DIR}/client_setup/df_h_after.txt"
+              df -Pk /artifacts | tee "${ARTIFACT_DIR}/client_setup/df_pk_after.txt"
+              python3 - <<'PYMANIFEST'
+              import os, pathlib
+              root = pathlib.Path(os.environ["ARTIFACT_DIR"])
+              rows = []
+              for path in sorted(p for p in root.rglob("*") if p.is_file()):
+                  rows.append(f"{path}\t{path.stat().st_size}")
+              (root / "manifest.tsv").write_text("\n".join(rows) + "\n")
+              PYMANIFEST
+              echo "AIPERF_AGG1_SWE_C27_END rc=${rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "${ARTIFACT_DIR}/logs/run.log"
+              exit "${rc}"
+          volumeMounts:
+            - name: shared-model-cache
+              mountPath: /opt/models
+              readOnly: true
+            - name: bench-artifacts
+              mountPath: /artifacts
+      volumes:
+        - name: shared-model-cache
+          persistentVolumeClaim:
+            claimName: shared-model-cache
+        - name: bench-artifacts
+          persistentVolumeClaim:
+            claimName: nemotron-ultra-aiperf-artifacts

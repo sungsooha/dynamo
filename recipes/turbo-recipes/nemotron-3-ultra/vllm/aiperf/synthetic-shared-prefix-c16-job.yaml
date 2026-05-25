@@ -1,0 +1,149 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ultra-aiperf-synth-c16
+  labels:
+    app: ultra-aiperf-synth-c16
+    track: nemotron-ultra-phase0-v2-k8s
+    stage: synthetic-c16
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app: ultra-aiperf-synth-c16
+        track: nemotron-ultra-phase0-v2-k8s
+        stage: synthetic-c16
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: nvcr-secret
+      containers:
+        - name: aiperf-c16
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-aiperf-client-0.8.0-tokenizers-20260522T204015Z@sha256:ebbb3bf5e2e2c09f34e742db18ab7ef6cfb01721050aeec7a4a77473f53fb4d4
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "8"
+              memory: 16Gi
+            limits:
+              cpu: "16"
+              memory: 32Gi
+          env:
+            - name: BASE_URL
+              value: http://ultra-vllm-p06h-256k-frontend:8000
+            - name: MODEL
+              value: nemotron-ultra-ea
+            - name: TOKENIZER_PATH
+              value: /opt/models/patched/nemotron-ultra-ea-trtllm-tokenizer-patch-469ed01fa35dbc5e962a7d78bdbd9548872e9844
+            - name: ARTIFACT_DIR
+              value: /artifacts/ultra-vllm-p06h-256k-synthetic-c16
+            - name: HF_HOME
+              value: /opt/models
+            - name: HF_HUB_CACHE
+              value: /opt/models/hub
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: CONCURRENCY
+              value: "16"
+            - name: WORKERS_MAX
+              value: "16"
+            - name: OSL
+              value: "64"
+            - name: SYSTEM_PROMPT_TOKENS
+              value: "7373"
+            - name: USER_CONTEXT_PROMPT_LENGTH
+              value: "1"
+            - name: SYNTHETIC_INPUT_TOKENS_MEAN
+              value: "818"
+            - name: REQUEST_COUNT
+              value: "64"
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p "${ARTIFACT_DIR}/client_setup" "${ARTIFACT_DIR}/commands" "${ARTIFACT_DIR}/logs"
+              echo "AIPERF_SYNTH_C16_BEGIN $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee "${ARTIFACT_DIR}/logs/run.log"
+              env | grep -E '^(BASE_URL|MODEL|TOKENIZER_PATH|ARTIFACT_DIR|CONCURRENCY|WORKERS_MAX|OSL|SYSTEM_PROMPT_TOKENS|USER_CONTEXT_PROMPT_LENGTH|SYNTHETIC_INPUT_TOKENS_MEAN|REQUEST_COUNT|HF_HOME|HF_HUB_CACHE|HF_HUB_OFFLINE|TRANSFORMERS_OFFLINE)=' | sort | tee "${ARTIFACT_DIR}/run_env.txt"
+              python3 --version | tee "${ARTIFACT_DIR}/client_setup/python_version.txt"
+              python3 - <<'PYDEP' | tee "${ARTIFACT_DIR}/client_setup/dependency_versions.txt"
+              import importlib.metadata as md
+              for name in ["sentencepiece", "tiktoken", "regex", "requests", "tokenizers", "transformers"]:
+                  try:
+                      print(f"{name}=={md.version(name)}")
+                  except md.PackageNotFoundError:
+                      print(f"{name}=MISSING")
+              PYDEP
+              COLUMNS=240 aiperf profile --help >"${ARTIFACT_DIR}/client_setup/aiperf_profile_help.txt" 2>&1
+              tokenizer_smoke_ultra.sh >"${ARTIFACT_DIR}/client_setup/tokenizer_smoke.log" 2>&1
+              tail -n 20 "${ARTIFACT_DIR}/client_setup/tokenizer_smoke.log" | tee -a "${ARTIFACT_DIR}/logs/run.log"
+              python3 - <<'PYSCRIPT'
+              import os
+              import pathlib
+              import stat
+
+              script = pathlib.Path(os.environ["ARTIFACT_DIR"]) / "commands" / "run_aiperf_c16.sh"
+              script.write_text("""#!/usr/bin/env bash
+              set -euo pipefail
+              COLUMNS=240 exec aiperf profile \\
+                -m "${MODEL}" \\
+                -u "${BASE_URL}" \\
+                --endpoint v1/chat/completions \\
+                --endpoint-type chat \\
+                --streaming \\
+                --concurrency "${CONCURRENCY}" \\
+                --workers-max "${WORKERS_MAX}" \\
+                --request-count "${REQUEST_COUNT}" \\
+                --num-dataset-entries "${REQUEST_COUNT}" \\
+                --shared-system-prompt-length "${SYSTEM_PROMPT_TOKENS}" \\
+                --user-context-prompt-length "${USER_CONTEXT_PROMPT_LENGTH}" \\
+                --synthetic-input-tokens-mean "${SYNTHETIC_INPUT_TOKENS_MEAN}" \\
+                --synthetic-input-tokens-stddev 0 \\
+                --output-tokens-mean "${OSL}" \\
+                --output-tokens-stddev 0 \\
+                --tokenizer "${TOKENIZER_PATH}" \\
+                --tokenizer-trust-remote-code \\
+                --extra-inputs "min_tokens:${OSL}" \\
+                --extra-inputs "ignore_eos:true" \\
+                --use-server-token-count \\
+                --random-seed 42 \\
+                --export-level records \\
+                --ui-type none \\
+                --no-server-metrics \\
+                --artifact-dir "${ARTIFACT_DIR}"
+              """.replace("              ", ""), encoding="utf-8", newline="\n")
+              script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+              PYSCRIPT
+              bash -n "${ARTIFACT_DIR}/commands/run_aiperf_c16.sh"
+              set +e
+              bash "${ARTIFACT_DIR}/commands/run_aiperf_c16.sh" 2>&1 | tee "${ARTIFACT_DIR}/logs/aiperf_profile.log"
+              rc=${PIPESTATUS[0]}
+              set -e
+              python3 - <<'PYMANIFEST'
+              import os
+              import pathlib
+              root = pathlib.Path(os.environ["ARTIFACT_DIR"])
+              rows = []
+              for path in sorted(p for p in root.rglob("*") if p.is_file()):
+                  rows.append(f"{path}\t{path.stat().st_size}")
+              (root / "manifest.tsv").write_text("\n".join(rows) + "\n")
+              PYMANIFEST
+              echo "AIPERF_SYNTH_C16_END rc=${rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "${ARTIFACT_DIR}/logs/run.log"
+              exit "${rc}"
+          volumeMounts:
+            - name: shared-model-cache
+              mountPath: /opt/models
+              readOnly: true
+            - name: bench-artifacts
+              mountPath: /artifacts
+      volumes:
+        - name: shared-model-cache
+          persistentVolumeClaim:
+            claimName: shared-model-cache
+        - name: bench-artifacts
+          persistentVolumeClaim:
+            claimName: nemotron-ultra-bench
