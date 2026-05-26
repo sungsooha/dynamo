@@ -4,14 +4,13 @@
 #
 # Nemotron-3-Ultra turbo NIM vLLM draft recipe.
 #
-# Current accepted vLLM checkpoint: Patch06+humming plus the Ultra MTP
-# DS-layout conv-tail copy patch.
+# Current accepted vLLM checkpoint: Patch06+humming plus Ultra MTP/P-D
+# installed-package patches.
 #
 # This Dockerfile starts from the published Patch06+humming image, applies the
-# installed-package MTP DS-copy diagnostic patch, and embeds the recipe launch
-# and validation scripts. Patch06 and the MTP patch are checked into patches/
-# for audit and future source rebuild work; this wrapper remains the validated
-# runtime reproduction path until the MTP patch is promoted to a source patch.
+# installed-package Ultra patches, and embeds the recipe launch and validation
+# scripts. Patch06 and the installed-package patches are checked into patches/
+# for audit and future source rebuild work.
 #
 # Patch06+humming base image provenance:
 # - vLLM main 1c78f76 + PR #42554 68dc38b + PR #42547 477556a
@@ -22,8 +21,9 @@
 # - digest:
 #   sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
 #
-# MTP DS-copy patch provenance:
+# Ultra installed-package patch provenance:
 # - diagnostic patch: patches/ds_copy_diag_installed_vllm.patch
+# - P/D SSM/NIXL tailfix: patches/ssm_nixl_tailfix_installed_vllm.patch
 # - patch source: work-tracker/helix-vllm
 #   projects/nemotron-ultra/mtp-ds-copy-diagnostic
 # - validated non-bypass config: VLLM_SSM_CONV_STATE_LAYOUT=DS,
@@ -35,6 +35,10 @@
 #   nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-diag-20260523T164824Z
 # - diagnostic image digest:
 #   sha256:4c2e66ddd2610b9fbd84caffb0ae5663264322cfc29b9f22cf8be141f88d7cca
+# - SSM/NIXL tailfix image:
+#   nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z
+# - SSM/NIXL tailfix digest:
+#   sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
 #
 # Build this recipe wrapper from the Dynamo repo root:
 #
@@ -45,24 +49,32 @@
 
 ARG BASE_IMAGE="nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337"
 ARG APPLY_MTP_DS_COPY_PATCH=1
+ARG APPLY_SSM_NIXL_TAILFIX_PATCH=1
 
 FROM ${BASE_IMAGE}
 USER root
 
 ARG APPLY_MTP_DS_COPY_PATCH
+ARG APPLY_SSM_NIXL_TAILFIX_PATCH
 
 COPY --chmod=755 --chown=root:0 \
   scripts/apply_ds_copy_patch_in_container.py \
+  scripts/apply_ssm_nixl_tailfix_in_container.py \
   scripts/ds_copy_selftest.py \
   /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/
 
 COPY --chmod=644 --chown=root:0 \
   patches/ds_copy_diag_installed_vllm.patch \
+  patches/ssm_nixl_tailfix_installed_vllm.patch \
   /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/patches/
 
 RUN if [ "${APPLY_MTP_DS_COPY_PATCH}" = "1" ]; then \
       python3 /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/apply_ds_copy_patch_in_container.py \
         --diff-out /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/patches/ds_copy_diag_applied_at_build.patch; \
+    fi && \
+    if [ "${APPLY_SSM_NIXL_TAILFIX_PATCH}" = "1" ]; then \
+      python3 /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/apply_ssm_nixl_tailfix_in_container.py \
+        --diff-out /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/patches/ssm_nixl_tailfix_applied_at_build.patch; \
     fi && \
     python3 - <<'PY'
 import importlib
@@ -78,6 +90,10 @@ required = {
     "v1/worker/mamba_utils.py": [
         "HELIX_ULTRA_MTP_DS_COPY_DIAG",
         "ds_conv_tail_copy",
+    ],
+    "distributed/kv_transfer/kv_connector/v1/nixl/worker.py": [
+        "NEMOTRON_ULTRA_SSM_NIXL_TAILFIX",
+        "SSM group has no local blocks to receive",
     ],
 }
 missing = []

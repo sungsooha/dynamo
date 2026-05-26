@@ -7,15 +7,15 @@ metadata:
     app.kubernetes.io/name: nemotron-ultra
     app.kubernetes.io/component: dgd-readiness
     nemotron-ultra.nvidia.com/backend: vllm
-    nemotron-ultra.nvidia.com/baseline: patch06-humming-mtp1-ds-copy
+    nemotron-ultra.nvidia.com/baseline: patch06-humming-mtp1-ds-copy-ssm-tailfix
     nemotron-ultra.nvidia.com/topology: pd-2p1d
   annotations:
-    nemotron-ultra.nvidia.com/status: mtp1-pd-2p1d-swe30-c20-pending-clean-12gpu-capacity
-    nemotron-ultra.nvidia.com/image-digest: sha256:4c2e66ddd2610b9fbd84caffb0ae5663264322cfc29b9f22cf8be141f88d7cca
+    nemotron-ultra.nvidia.com/status: mtp1-pd-2p1d-swe30-c20-tailfix-pending-k8s-tiny-pass
+    nemotron-ultra.nvidia.com/image-digest: sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
     nemotron-ultra.nvidia.com/artifact-pvc-note: nemotron-ultra-aiperf-artifacts 50Gi
       full Moontrace artifact PVC
     nemotron-ultra.nvidia.com/image-pullability: published-to-nvcr
-    nemotron-ultra.nvidia.com/image-tag: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-diag-20260523T164824Z
+    nemotron-ultra.nvidia.com/image-tag: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z
     nemotron-ultra.nvidia.com/discovery-plane: operator-kubernetes-discovery-nats;
       no explicit etcd
     nemotron-ultra.nvidia.com/action-id: K8S_VLLM_PATCH06_MTP1_PD_2P1D_SWE_30PCT_C20
@@ -87,7 +87,7 @@ spec:
         - name: nvcr-secret
         containers:
         - name: main
-          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-diag-20260523T164824Z@sha256:4c2e66ddd2610b9fbd84caffb0ae5663264322cfc29b9f22cf8be141f88d7cca
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z@sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
           imagePullPolicy: IfNotPresent
           command:
           - "/bin/bash"
@@ -151,7 +151,7 @@ spec:
           effect: NoSchedule
         containers:
         - name: main
-          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-diag-20260523T164824Z@sha256:4c2e66ddd2610b9fbd84caffb0ae5663264322cfc29b9f22cf8be141f88d7cca
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z@sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
           imagePullPolicy: IfNotPresent
           workingDir: "/workspace"
           command:
@@ -298,7 +298,7 @@ spec:
           effect: NoSchedule
         containers:
         - name: main
-          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-diag-20260523T164824Z@sha256:4c2e66ddd2610b9fbd84caffb0ae5663264322cfc29b9f22cf8be141f88d7cca
+          image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z@sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
           imagePullPolicy: IfNotPresent
           workingDir: "/workspace"
           command:

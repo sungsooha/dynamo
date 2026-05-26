@@ -23,6 +23,8 @@ Patches/features included by the recipe Dockerfile:
 - Humming kernels: `humming-kernels[cu13]==0.1.0`
 - Ultra MTP DS-layout conv-tail copy patch:
   `patches/ds_copy_diag_installed_vllm.patch`
+- P/D SSM/NIXL prefix-cache tailfix:
+  `patches/ssm_nixl_tailfix_installed_vllm.patch`
 - FlashInfer cubin writable-path setup for non-root container runtime
 - Recipe launchers and bounded smoke wrapper
 
@@ -44,6 +46,15 @@ nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-d
 Use the Dockerfile as the normal reproduction path. The diagnostic image is
 kept here as provenance and as a temporary comparison target while the DS-copy
 patch remains an installed-package patch.
+
+The expedited P/D tailfix image is:
+
+```text
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z@sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a
+```
+
+This adds the SSM/NIXL tail-alignment patch needed by long-context P/D NIXL
+transfer. Aggregate AGG1/AGG2 runs do not exercise that branch.
 
 ## Direct-Docker Smoke
 
@@ -88,6 +99,39 @@ recipes/turbo-recipes/nemotron-3-ultra/vllm/benchmark.sh
 
 When `SPEC_TOKENS != 0`, `benchmark.sh` runs the DS-copy self-test before
 server startup.
+
+## P/D Examples
+
+The P/D examples live under `disagg/`.
+
+Local direct-Docker 1P1D smoke:
+
+```bash
+HOST_MODEL_PATH=/path/to/nemotron-ultra-ea-model-view \
+IMAGE=nemotron-3-ultra-vllm-turbo:dev \
+PREFILL_GPU_SET=0,1,2,3 \
+DECODE_GPU_SET=4,5,6,7 \
+MAX_NUM_SEQS=32 \
+MAX_BATCHED_TOKENS=32768 \
+BLOCK_SIZE=64 \
+SPEC_METHOD=nemotron_h_mtp \
+SPEC_TOKENS=1 \
+ARTIFACT_ROOT=/tmp/nemotron-ultra/local-pd-1p1d-smoke \
+KEEP_RUNNING=0 \
+recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/local-pd-1p1d.sh
+```
+
+Kubernetes 2P1D DGD:
+
+```bash
+NAMESPACE=<namespace>
+kubectl -n "${NAMESPACE}" apply --dry-run=server \
+  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml \
+  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml \
+  -o yaml >/tmp/nemotron-ultra-pd2p1d.dryrun.yaml
+```
+
+See `disagg/README.md` for the full local and DGD command flow.
 
 ## 30% Moontrace Tuning Results
 
@@ -211,8 +255,10 @@ The checked-in manifests are namespace-neutral. Apply them with
   `agg2/deploy-chat-c64.yaml`, `aiperf/mooncake-chat-agg2-c64-job.yaml`.
 - P/D 2P1D MTP1 SWE 30%:
   `disagg/deploy.yaml`, `aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml`.
-  This shape is pending terminal result and needs three clean 4-GPU B200
-  worker slots with RDMA.
+  This shape uses the tailfix image above. K8s tiny c1/r8 long-context probe
+  passed with 8/8 valid records; the 30% Moontrace performance row is still
+  pending and should not be promoted until transfer-latency isolation passes.
+  It needs three clean 4-GPU B200 worker slots with RDMA.
 
 Generic DGD/job flow:
 
@@ -238,6 +284,13 @@ Use `agg1/deploy-chat-c40.yaml` with `aiperf/mooncake-chat-agg1-c40-job.yaml`,
 `agg1/deploy-swe-c27.yaml` with `aiperf/mooncake-swe-agg1-c27-job.yaml`, or
 `agg2/deploy-chat-c64.yaml` with `aiperf/mooncake-chat-agg2-c64-job.yaml` for
 the aggregate templates.
+
+For the P/D template, confirm the DGD uses the tailfix image before applying:
+
+```bash
+rg 'b4a948fd|ssm-tailfix|spec-method|spec-tokens|kv-transfer-config|disaggregation-mode' \
+  recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml
+```
 
 Live apply should use the deterministic benchmark routine: verify PVCs,
 secrets, trace hash, CRD/operator compatibility, scheduler capacity, and
@@ -307,5 +360,14 @@ P/D runs additionally require:
 --kv-transfer-config {"kv_connector":"NixlConnector","kv_role":"kv_both"}
 --disaggregation-mode prefill|decode
 ```
+
+For direct-Docker P/D launch scripts, set `SPEC_METHOD=nemotron_h_mtp` and
+`SPEC_TOKENS=1` to enable MTP1 on prefill/decode workers.
+
+Current P/D caveat: local direct-Docker 1P1D MTP1 tailfix c20 exposed a
+decode-side NIXL transfer-latency pathology on the 30% SWE trace after tiny
+traffic passed. Use the P/D templates for smoke and bounded isolation first;
+do not run or publish the full 6819-row P/D SWE row until the bounded c1/r8 and
+c4/r64 transfer metrics are sane.
 
 Aggregate runs must not set P/D transfer or RDMA resource requests.

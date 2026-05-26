@@ -24,6 +24,8 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-32768}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.9}"
 VLLM_BLOCK_SIZE="${VLLM_BLOCK_SIZE:-64}"
+SPEC_METHOD="${SPEC_METHOD:-${MTP_SPEC_METHOD:-}}"
+SPEC_TOKENS="${SPEC_TOKENS:-${MTP_SPEC_TOKENS:-0}}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
 REASONING_PARSER="${REASONING_PARSER:-nemotron3}"
 CUDA_VISIBLE_DEVICES="${DECODE_CVD:-4,5,6,7}"
@@ -38,6 +40,11 @@ export CUDA_VISIBLE_DEVICES
 
 mkdir -p "${LOG_DIR}"
 exec >"${LOG_DIR}/decode.log" 2>&1
+
+speculative_args=()
+if [[ -n "${SPEC_METHOD}" && "${SPEC_TOKENS}" != "0" ]]; then
+  speculative_args+=(--spec-method "${SPEC_METHOD}" --spec-tokens "${SPEC_TOKENS}")
+fi
 
 exec python -m dynamo.vllm \
   --discovery-backend "${DYN_DISCOVERY_BACKEND}" \
@@ -61,4 +68,5 @@ exec python -m dynamo.vllm \
   --reasoning-parser-plugin "${MODEL_PATH}/ultra_v3_reasoning_parser.py" \
   --reasoning-parser nemotron_v3 \
   --no-disable-hybrid-kv-cache-manager \
+  "${speculative_args[@]}" \
   --disaggregation-mode decode
