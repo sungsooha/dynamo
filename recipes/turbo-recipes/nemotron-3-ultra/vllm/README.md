@@ -97,10 +97,14 @@ export, and cleanup all recorded.
 
 Current best recipes from 30% Moontrace:
 
-| Workload | Recommended topology | Server shape | AIPerf point | Result | Cache/router evidence |
-|---|---|---|---|---|---|
-| Chat | AGG1 MTP1 | `mns72`, `mbt32768`, `block64`, TP4 on 4 GPUs | `c68`, `3546` requests | `202.097 TPS/GPU`, `64.263 TPS/user`, `11/3546` client warnings | router hit avg `0.4924`, cached tokens `14.3M`, KV events `18.8K` |
-| SWE | AGG2 MTP1 | `mns32/worker`, `mbt32768`, `block64`, two TP4 workers on 8 GPUs | `c32`, `6819` requests | `96.260 TPS/GPU`, `51.875 TPS/user`, fail0 | router hit avg `0.8398`, cached tokens `234.5M`, KV events `30.0K` |
+- Chat: AGG1 MTP1, TP4 on 4 GPUs, `mns72/mbt32768/block64`, AIPerf
+  `c68` with `3546` requests. Result: `202.097 TPS/GPU`,
+  `64.263 TPS/user`, `11/3546` client warnings, router hit avg `0.4924`,
+  cached tokens `14.3M`, KV events `18.8K`.
+- SWE: AGG2 MTP1, two TP4 workers on 8 GPUs, `mns32/worker`,
+  `mbt32768/block64`, AIPerf `c32` with `6819` requests. Result:
+  `96.260 TPS/GPU`, `51.875 TPS/user`, fail0, router hit avg `0.8398`,
+  cached tokens `234.5M`, KV events `30.0K`.
 
 Chat has a zero-warning AGG1 MTP1 fallback at `mns64/mbt32768/block64/c64`
 with `198.736 TPS/GPU`, `71.488 TPS/user`, router hit avg `0.4900`, cached
@@ -109,6 +113,16 @@ tokens `13.6M`, and KV events `19.1K`.
 The same AGG2 MTP SWE shape should not be climbed past `c40` without changing
 configuration: `c40` improved raw throughput but fell below the `50 TPS/user`
 floor.
+
+Run these shapes with the smoke wrapper by substituting the row-specific envs
+into the Direct-Docker command above.
+
+- Chat AGG1 MTP1 c68: `AGG_WORKERS=1`, `GPU_SET=0,1,2,3`,
+  `MAX_NUM_SEQS=72`, `MAX_BATCHED_TOKENS=32768`, `BLOCK_SIZE=64`,
+  `SPEC_METHOD=nemotron_h_mtp`, `SPEC_TOKENS=1`.
+- SWE AGG2 MTP1 c32: `AGG_WORKERS=2`, `GPU_SET=0,1,2,3,4,5,6,7`,
+  `MAX_NUM_SEQS=32`, `MAX_BATCHED_TOKENS=32768`, `BLOCK_SIZE=64`,
+  `SPEC_METHOD=nemotron_h_mtp`, `SPEC_TOKENS=1`.
 
 ## Local Synthetic Recipes
 
@@ -129,38 +143,71 @@ SWE:  ISL=65536, OSL=400, cache=90%, system_prompt_tokens=58982, user_prompt_tok
 
 Representative local synthetic winners:
 
-| Workload | Topology | Shape | Result | Cache evidence |
-|---|---|---|---|---|
-| Chat | AGG1 MTP1 | `mns72`, `mbt32768`, `block64`, `c68` | `558.974 TPS/GPU`, `52.581 TPS/user`, fail0 | verified by metrics |
-| SWE | AGG1 MTP1 | `mns40`, `mbt32768`, `block64`, `c38` | `303.310 TPS/GPU`, `51.587 TPS/user`, fail0 | verified by metrics |
-| SWE | AGG2 MTP1 | `mns32/worker`, `mbt32768`, `block64`, `c32` | `96.260 TPS/GPU`, `51.875 TPS/user`, fail0 on 30% Moontrace | verified by metrics |
+- Chat AGG1 MTP1 `mns72/mbt32768/block64/c68`:
+  `558.974 TPS/GPU`, `52.581 TPS/user`, fail0, cache verified.
+- SWE AGG1 MTP1 `mns40/mbt32768/block64/c38`:
+  `303.310 TPS/GPU`, `51.587 TPS/user`, fail0, cache verified.
+- SWE AGG2 MTP1 `mns32/worker/mbt32768/block64/c32`:
+  `96.260 TPS/GPU`, `51.875 TPS/user`, fail0 on 30% Moontrace,
+  cache verified.
 
 More synthetic rows and command shapes are in
 `aiperf/local-synthetic-champions.md`.
+
+Minimal synthetic AIPerf invocation against an already-running frontend:
+
+```bash
+BASE_URL=http://127.0.0.1:18740 \
+CONCURRENCY=40 REQUEST_COUNT=640 \
+SYSTEM_PROMPT_TOKENS=5734 USER_CONTEXT_PROMPT_LENGTH=2432 \
+SYNTHETIC_INPUT_TOKENS_MEAN=26 OSL=1024 \
+ARTIFACT_DIR=/tmp/nemotron-ultra/aiperf-chat \
+recipes/turbo-recipes/nemotron-3-ultra/vllm/aiperf/run_synthetic_shared_prefix.sh
+```
+
+For SWE, use `CONCURRENCY=27 REQUEST_COUNT=864 SYSTEM_PROMPT_TOKENS=58982
+USER_CONTEXT_PROMPT_LENGTH=6528 SYNTHETIC_INPUT_TOKENS_MEAN=26 OSL=400`.
 
 ## Kubernetes DGD Configs
 
 The checked-in manifests are namespace-neutral. Apply them with
 `kubectl -n <namespace> ...`.
 
-| Config | Files | Status |
-|---|---|---|
-| AGG1 chat/SWE non-MTP | `agg1/deploy-chat-c40.yaml`, `agg1/deploy-swe-c27.yaml`, `aiperf/mooncake-chat-agg1-c40-job.yaml`, `aiperf/mooncake-swe-agg1-c27-job.yaml` | Available. Chat reached terminal on Kubernetes; SWE produced partial profile before deadline and is not a final row. |
-| AGG2 chat non-MTP | `agg2/deploy-chat-c64.yaml`, `aiperf/mooncake-chat-agg2-c64-job.yaml` | Available. Endpoint passed; benchmark was held because same-model backend discovery needed isolation. |
-| P/D 2P1D MTP1 SWE 30% | `disagg/deploy.yaml`, `aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml` | Pending terminal result. Requires three clean 4-GPU B200 worker slots with RDMA. |
+- AGG1 chat/SWE non-MTP:
+  `agg1/deploy-chat-c40.yaml`, `agg1/deploy-swe-c27.yaml`,
+  `aiperf/mooncake-chat-agg1-c40-job.yaml`,
+  `aiperf/mooncake-swe-agg1-c27-job.yaml`.
+- AGG2 chat non-MTP:
+  `agg2/deploy-chat-c64.yaml`, `aiperf/mooncake-chat-agg2-c64-job.yaml`.
+- P/D 2P1D MTP1 SWE 30%:
+  `disagg/deploy.yaml`, `aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml`.
+  This shape is pending terminal result and needs three clean 4-GPU B200
+  worker slots with RDMA.
 
-Server-side dry-run example:
+Generic DGD/job flow:
 
 ```bash
 NAMESPACE=<namespace>
-kubectl -n "${NAMESPACE}" apply --dry-run=server \
-  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml \
-  -o yaml >/tmp/ultra-vllm-pd2p1d-mtp1-swe30-c20.dryrun.yaml
+DGD=recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml
+JOB=recipes/turbo-recipes/nemotron-3-ultra/vllm/aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml
+DGD_NAME=ultra-vllm-p06h-mtp1-pd2p1d-swe30-c20
+JOB_NAME=ultra-aiperf-mtp1-pd2p1d-swe30-c20
 
 kubectl -n "${NAMESPACE}" apply --dry-run=server \
-  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml \
-  -o yaml >/tmp/ultra-aiperf-pd2p1d-mtp1-swe30-c20.dryrun.yaml
+  -f "${DGD}" -f "${JOB}" -o yaml >/tmp/ultra-recipe.dryrun.yaml
+kubectl -n "${NAMESPACE}" apply -f "${DGD}"
+kubectl -n "${NAMESPACE}" wait --for=condition=Ready "dgd/${DGD_NAME}" --timeout=60m
+# Run /health, /v1/models, and one short-chat smoke before applying the Job.
+kubectl -n "${NAMESPACE}" apply -f "${JOB}"
+kubectl -n "${NAMESPACE}" wait --for=condition=complete "job/${JOB_NAME}" --timeout=8h
+kubectl -n "${NAMESPACE}" logs "job/${JOB_NAME}"
+kubectl -n "${NAMESPACE}" delete -f "${JOB}" -f "${DGD}" --ignore-not-found
 ```
+
+Use `agg1/deploy-chat-c40.yaml` with `aiperf/mooncake-chat-agg1-c40-job.yaml`,
+`agg1/deploy-swe-c27.yaml` with `aiperf/mooncake-swe-agg1-c27-job.yaml`, or
+`agg2/deploy-chat-c64.yaml` with `aiperf/mooncake-chat-agg2-c64-job.yaml` for
+the aggregate templates.
 
 Live apply should use the deterministic benchmark routine: verify PVCs,
 secrets, trace hash, CRD/operator compatibility, scheduler capacity, and
