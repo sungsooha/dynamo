@@ -5,10 +5,6 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nemotron-3-Ultra vLLM Recipe
 
-This recipe packages the current vLLM Patch06+humming runtime and the Ultra
-MTP DS-copy patch. It is intended to be reproducible from this directory for
-both direct-Docker B200 checks and Kubernetes DGD runs.
-
 ## Image
 
 The recipe image is built by applying local patches on top of the accepted
