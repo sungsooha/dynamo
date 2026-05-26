@@ -17,8 +17,21 @@ IMAGE="${IMAGE:-nemotron-3-ultra-vllm-turbo:dev}"
 BUILD_IMAGE="${BUILD_IMAGE:-0}"
 DOCKER_CMD="${DOCKER_CMD:-docker}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/tmp/nemotron-ultra/recipe-smoke-$(date -u +%Y%m%dT%H%M%SZ)}"
-CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/model}"
+USER_CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-}"
+MODEL_VIEW_NAME="$(basename "${HOST_MODEL_PATH}")"
+HOST_MODEL_PARENT="$(dirname "${HOST_MODEL_PATH}")"
+HOST_MODEL_GRANDPARENT="$(dirname "${HOST_MODEL_PARENT}")"
+if [ -z "${USER_CONTAINER_MODEL_PATH}" ] && [ "$(basename "${HOST_MODEL_PARENT}")" = "patched" ] && [ -d "${HOST_MODEL_GRANDPARENT}/hub" ]; then
+  HOST_MODEL_MOUNT_ROOT="${HOST_MODEL_MOUNT_ROOT:-${HOST_MODEL_GRANDPARENT}}"
+  CONTAINER_MODEL_MOUNT_ROOT="${CONTAINER_MODEL_MOUNT_ROOT:-/opt/models}"
+  CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-${CONTAINER_MODEL_MOUNT_ROOT}/patched/${MODEL_VIEW_NAME}}"
+else
+  HOST_MODEL_MOUNT_ROOT="${HOST_MODEL_MOUNT_ROOT:-${HOST_MODEL_PATH}}"
+  CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/model}"
+  CONTAINER_MODEL_MOUNT_ROOT="${CONTAINER_MODEL_MOUNT_ROOT:-${CONTAINER_MODEL_PATH}}"
+fi
 GPU_SET="${GPU_SET:-0,1,2,3}"
+GPU_DEVICE_REQUEST="${GPU_DEVICE_REQUEST:-\"device=${GPU_SET}\"}"
 AGG_WORKERS="${AGG_WORKERS:-1}"
 FRONTEND_PORT="${FRONTEND_PORT:-18740}"
 ETCD_CLIENT_PORT="${ETCD_CLIENT_PORT:-2379}"
@@ -40,8 +53,14 @@ WORKER0_CVD="${WORKER0_CVD:-0,1,2,3}"
 WORKER1_CVD="${WORKER1_CVD:-4,5,6,7}"
 WORKER0_SYSTEM_PORT="${WORKER0_SYSTEM_PORT:-19901}"
 WORKER1_SYSTEM_PORT="${WORKER1_SYSTEM_PORT:-19902}"
-WORKER0_KV_EVENTS_CONFIG="${WORKER0_KV_EVENTS_CONFIG:-{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:5571\",\"enable_kv_cache_events\":true}}"
-WORKER1_KV_EVENTS_CONFIG="${WORKER1_KV_EVENTS_CONFIG:-{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:5572\",\"enable_kv_cache_events\":true}}"
+WORKER0_KV_EVENTS_CONFIG="${WORKER0_KV_EVENTS_CONFIG:-}"
+WORKER1_KV_EVENTS_CONFIG="${WORKER1_KV_EVENTS_CONFIG:-}"
+if [ -z "${WORKER0_KV_EVENTS_CONFIG}" ]; then
+  WORKER0_KV_EVENTS_CONFIG='{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5571","enable_kv_cache_events":true}'
+fi
+if [ -z "${WORKER1_KV_EVENTS_CONFIG}" ]; then
+  WORKER1_KV_EVENTS_CONFIG='{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5572","enable_kv_cache_events":true}'
+fi
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-1800}"
 POLL_INTERVAL_S="${POLL_INTERVAL_S:-10}"
 
@@ -228,8 +247,11 @@ payload = {
     "artifact_root": "${ARTIFACT_ROOT}",
     "repo_root": "${REPO_ROOT}",
     "host_model_path": "${HOST_MODEL_PATH}",
+    "host_model_mount_root": "${HOST_MODEL_MOUNT_ROOT}",
     "container_model_path": "${CONTAINER_MODEL_PATH}",
+    "container_model_mount_root": "${CONTAINER_MODEL_MOUNT_ROOT}",
     "gpu_set": "${GPU_SET}",
+    "docker_gpu_request": ${GPU_DEVICE_REQUEST@Q},
     "topology": "AGG2" if "${AGG_WORKERS}" == "2" else "AGG1",
     "agg_workers": int("${AGG_WORKERS}"),
     "tp_per_worker": 4,
@@ -259,6 +281,7 @@ payload = {
         "server_start_failure",
         "health_timeout",
         "models_endpoint_failed",
+        "model_context_mismatch",
         "exact_chat_failed",
         "cleanup_failed",
     ],
@@ -295,9 +318,19 @@ record_command image_inspect "${inspect_cmd[@]}"
 "${inspect_cmd[@]}" >"${ARTIFACT_ROOT}/preflight/image_inspect.json" 2>"${ARTIFACT_ROOT}/preflight/image_inspect.err" \
   || fail "image_inspect_failed" preflight "docker image inspect failed"
 
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+
 if [ "${RUN_DS_COPY_SELFTEST}" = "1" ] && [ "${SPEC_TOKENS}" != "0" ]; then
   selftest_cmd=(
-    "${docker_cmd[@]}" run --rm --gpus "device=${GPU_SET}"
+    "${docker_cmd[@]}" run --rm --gpus "${GPU_DEVICE_REQUEST}"
+    --user "${host_uid}:${host_gid}"
+    -e HOME=/tmp
+    -e USER="$(id -un)"
+    -e LOGNAME="$(id -un)"
+    -e XDG_CACHE_HOME=/tmp/cache
+    -e TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache
+    -e TORCH_EXTENSIONS_DIR=/tmp/torch_extensions
     -v "${ARTIFACT_ROOT}:/artifacts" "${IMAGE}"
     python3 /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/ds_copy_selftest.py
     --out /artifacts/smoke/ds_copy_selftest.json
@@ -309,7 +342,7 @@ if [ "${RUN_DS_COPY_SELFTEST}" = "1" ] && [ "${SPEC_TOKENS}" != "0" ]; then
 fi
 
 etcd_cmd=(
-  "${docker_cmd[@]}" run -d --rm --network host --name "${ETCD_CONTAINER}" "${ETCD_IMAGE}"
+  "${docker_cmd[@]}" run -d --network host --name "${ETCD_CONTAINER}" "${ETCD_IMAGE}"
   etcd --name default --data-dir "/tmp/${ETCD_CONTAINER}"
   --listen-client-urls "http://0.0.0.0:${ETCD_CLIENT_PORT}"
   --advertise-client-urls "http://127.0.0.1:${ETCD_CLIENT_PORT}"
@@ -322,20 +355,18 @@ record_command etcd_run "${etcd_cmd[@]}"
 "${etcd_cmd[@]}" >"${ARTIFACT_ROOT}/status/etcd_container_id.txt"
 sleep 2
 
-host_uid="$(id -u)"
-host_gid="$(id -g)"
 server_cmd=(
-  "${docker_cmd[@]}" run -d --rm
+  "${docker_cmd[@]}" run -d
   --name "${CONTAINER_NAME}"
   --network host
   --ipc host
   --user "${host_uid}:${host_gid}"
-  --gpus "device=${GPU_SET}"
+  --gpus "${GPU_DEVICE_REQUEST}"
   --tmpfs /usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer:rw,exec,mode=1777
   --tmpfs /opt/dynamo/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins/flashinfer:rw,exec,mode=1777
   --ulimit memlock=-1
   --ulimit stack=67108864
-  -v "${HOST_MODEL_PATH}:${CONTAINER_MODEL_PATH}:ro"
+  -v "${HOST_MODEL_MOUNT_ROOT}:${CONTAINER_MODEL_MOUNT_ROOT}:ro"
   -v "${ARTIFACT_ROOT}:/artifacts"
   -e HOME=/tmp
   -e USER="$(id -un)"
@@ -403,8 +434,52 @@ status_event PASS endpoint "/health passed"
 
 models_cmd=(curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/v1/models")
 record_command curl_models "${models_cmd[@]}"
-"${models_cmd[@]}" >"${ARTIFACT_ROOT}/smoke/models.json" 2>"${ARTIFACT_ROOT}/smoke/models.err" \
-  || fail "models_endpoint_failed" endpoint "/v1/models failed"
+status_event RUNNING endpoint "waiting for /v1/models registration"
+models_ready=0
+deadline=$((SECONDS + READY_TIMEOUT_S))
+while [ "${SECONDS}" -lt "${deadline}" ]; do
+  if "${models_cmd[@]}" >"${ARTIFACT_ROOT}/smoke/models.json" 2>"${ARTIFACT_ROOT}/smoke/models.err"; then
+    if python3 - "$ARTIFACT_ROOT/smoke/models.json" "$SERVED_MODEL_NAME" "$MAX_MODEL_LEN" <<'PY'
+import json
+import sys
+
+path, expected_model, expected_context = sys.argv[1:4]
+payload = json.load(open(path))
+models = payload.get("data") or []
+for model in models:
+    model_id = model.get("id") or model.get("name")
+    if model_id != expected_model:
+        continue
+    context = (
+        model.get("context_window")
+        or model.get("max_model_len")
+        or model.get("max_context_length")
+        or model.get("max_sequence_length")
+    )
+    if context is not None and int(context) != int(expected_context):
+        raise SystemExit(2)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+    then
+      models_ready=1
+      break
+    else
+      rc=$?
+      if [ "${rc}" = "2" ]; then
+        fail "model_context_mismatch" endpoint "/v1/models context does not match ${MAX_MODEL_LEN}"
+      fi
+    fi
+  fi
+  if ! "${docker_cmd[@]}" ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+    fail "server_start_failure" endpoint "server container exited before /v1/models registration"
+  fi
+  sleep "${POLL_INTERVAL_S}"
+done
+if [ "${models_ready}" != "1" ]; then
+  fail "models_endpoint_failed" endpoint "/v1/models did not expose ${SERVED_MODEL_NAME} before timeout"
+fi
+status_event PASS endpoint "/v1/models exposed ${SERVED_MODEL_NAME}"
 
 status_event RUNNING exact_chat "running exact short chat"
 python3 - "$FRONTEND_PORT" "$SERVED_MODEL_NAME" "$ARTIFACT_ROOT" <<'PY' \

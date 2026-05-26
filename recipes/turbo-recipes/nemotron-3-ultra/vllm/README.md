@@ -124,6 +124,36 @@ into the Direct-Docker command above.
   `MAX_NUM_SEQS=32`, `MAX_BATCHED_TOKENS=32768`, `BLOCK_SIZE=64`,
   `SPEC_METHOD=nemotron_h_mtp`, `SPEC_TOKENS=1`.
 
+Moontrace AIPerf command after the frontend is reachable:
+
+```bash
+BASE_URL=http://127.0.0.1:18740
+MODEL=nemotron-ultra-ea
+TOKENIZER_PATH=/path/to/nemotron-ultra-tokenizer-or-model-view
+TRACE_FILE=/path/to/chat_or_swe_30pct_prefix_256k.jsonl
+ARTIFACT_DIR=/tmp/nemotron-ultra/aiperf-moontrace
+CONCURRENCY=68
+REQUEST_COUNT=3546
+SYNTHESIS_MAX_OSL=1024
+
+COLUMNS=240 aiperf profile \
+  -m "${MODEL}" -u "${BASE_URL}" \
+  --endpoint v1/chat/completions --endpoint-type chat --streaming \
+  --input-file "${TRACE_FILE}" --custom-dataset-type mooncake-trace \
+  --dataset-sampling-strategy sequential \
+  --concurrency "${CONCURRENCY}" --workers-max "${CONCURRENCY}" \
+  --request-count "${REQUEST_COUNT}" \
+  --prompt-input-tokens-block-size 512 \
+  --synthesis-max-isl 260608 --synthesis-max-osl "${SYNTHESIS_MAX_OSL}" \
+  --tokenizer "${TOKENIZER_PATH}" --tokenizer-trust-remote-code \
+  --extra-inputs ignore_eos:true --use-server-token-count \
+  --random-seed 42 --export-level records --ui-type none \
+  --artifact-dir "${ARTIFACT_DIR}"
+```
+
+Use `CONCURRENCY=32 REQUEST_COUNT=6819 SYNTHESIS_MAX_OSL=400` for the SWE
+AGG2 MTP1 c32 row.
+
 ## Local Synthetic Recipes
 
 Synthetic shared-prefix runs are useful for fast shape screening, but 30%

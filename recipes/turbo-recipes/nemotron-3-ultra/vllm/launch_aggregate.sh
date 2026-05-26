@@ -39,8 +39,14 @@ WORKER0_CVD="${WORKER0_CVD:-${WORKER_CVD:-0,1,2,3}}"
 WORKER1_CVD="${WORKER1_CVD:-4,5,6,7}"
 WORKER0_SYSTEM_PORT="${WORKER0_SYSTEM_PORT:-${WORKER_SYSTEM_PORT:-19901}}"
 WORKER1_SYSTEM_PORT="${WORKER1_SYSTEM_PORT:-19902}"
-WORKER0_KV_EVENTS_CONFIG="${WORKER0_KV_EVENTS_CONFIG:-${WORKER_KV_EVENTS_CONFIG:-{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:5571\",\"enable_kv_cache_events\":true}}}"
-WORKER1_KV_EVENTS_CONFIG="${WORKER1_KV_EVENTS_CONFIG:-{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:5572\",\"enable_kv_cache_events\":true}}"
+WORKER0_KV_EVENTS_CONFIG="${WORKER0_KV_EVENTS_CONFIG:-${WORKER_KV_EVENTS_CONFIG:-}}"
+WORKER1_KV_EVENTS_CONFIG="${WORKER1_KV_EVENTS_CONFIG:-}"
+if [ -z "${WORKER0_KV_EVENTS_CONFIG}" ]; then
+  WORKER0_KV_EVENTS_CONFIG='{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5571","enable_kv_cache_events":true}'
+fi
+if [ -z "${WORKER1_KV_EVENTS_CONFIG}" ]; then
+  WORKER1_KV_EVENTS_CONFIG='{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5572","enable_kv_cache_events":true}'
+fi
 LOG_DIR="${LOG_DIR:-/tmp/nemotron-ultra}"
 
 export MODEL_PATH SERVED_MODEL_NAME FRONTEND_PORT TP MAX_MODEL_LEN MAX_NUM_SEQS
