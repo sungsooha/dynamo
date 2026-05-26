@@ -100,6 +100,19 @@ recipes/turbo-recipes/nemotron-3-ultra/vllm/benchmark.sh
 When `SPEC_TOKENS != 0`, `benchmark.sh` runs the DS-copy self-test before
 server startup.
 
+`benchmark.sh` is the preferred local smoke wrapper, but the aggregate server
+entrypoint it runs inside the container is:
+
+```text
+/workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/launch_aggregate.sh
+```
+
+For the explicit direct-Docker server command that calls
+`launch_aggregate.sh`, see
+`aiperf/local-synthetic-champions.md`. That document includes the original
+AGG1 local command shape and the AIPerf command wrapper used for fast synthetic
+screening.
+
 ## P/D Examples
 
 The P/D examples live under `disagg/`.
@@ -284,6 +297,25 @@ Use `agg1/deploy-chat-c40.yaml` with `aiperf/mooncake-chat-agg1-c40-job.yaml`,
 `agg1/deploy-swe-c27.yaml` with `aiperf/mooncake-swe-agg1-c27-job.yaml`, or
 `agg2/deploy-chat-c64.yaml` with `aiperf/mooncake-chat-agg2-c64-job.yaml` for
 the aggregate templates.
+
+For the AGG1 SWE c27 path specifically:
+
+```bash
+NAMESPACE=<namespace>
+kubectl -n "${NAMESPACE}" apply --dry-run=server \
+  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/agg1/deploy-swe-c27.yaml \
+  -f recipes/turbo-recipes/nemotron-3-ultra/vllm/aiperf/mooncake-swe-agg1-c27-job.yaml \
+  -o yaml >/tmp/ultra-agg1-swe-c27.dryrun.yaml
+```
+
+The corresponding local direct-Docker aggregate server command is documented in
+`aiperf/local-synthetic-champions.md`; it runs
+`launch_aggregate.sh` with `MAX_NUM_SEQS=32`, `WORKER_CVD=0,1,2,3`, no P/D
+transfer args, and the SWE row's `MAX_BATCHED_TOKENS` / `VLLM_BLOCK_SIZE`
+values. The K8s `deploy-swe-c27.yaml` Moontrace template currently uses
+`max_num_batched_tokens=49152`, `block_size=64`; the later local synthetic
+SWE frontier used `65536`, so keep the manifest/result label explicit when
+comparing rows.
 
 For the P/D template, confirm the DGD uses the tailfix image before applying:
 

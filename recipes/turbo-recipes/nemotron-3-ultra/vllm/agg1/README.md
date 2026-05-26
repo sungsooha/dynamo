@@ -28,6 +28,33 @@ nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-hum
 | `deploy-chat-c40.yaml` | Moontrace chat candidate | `max_model_len=262144`, `max_num_seqs=40`, `max_num_batched_tokens=32768`, `block_size=32`; full 256K Moontrace chat c40 PASS |
 | `deploy-swe-c27.yaml` | Moontrace SWE candidate | `max_model_len=262144`, `max_num_seqs=32`, `max_num_batched_tokens=49152`, `block_size=64`; partial profile only, not a final SWE row |
 
+## Local Direct-Docker Reference
+
+The local aggregate server command that corresponds to these K8s aggregate
+templates is documented in `../aiperf/local-synthetic-champions.md`. It starts
+the recipe image with Docker and calls:
+
+```text
+/workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/launch_aggregate.sh
+```
+
+For the `deploy-swe-c27.yaml` shape, use the same AGG1 TP4 layout:
+
+```text
+WORKER_CVD=0,1,2,3
+TP=4
+MAX_MODEL_LEN=262144
+MAX_NUM_SEQS=32
+MAX_BATCHED_TOKENS=49152
+VLLM_BLOCK_SIZE=64
+P/D transfer: none
+```
+
+The local synthetic SWE frontier later moved to `MAX_BATCHED_TOKENS=65536`.
+Keep that distinction explicit: `deploy-swe-c27.yaml` is the K8s Moontrace
+SWE c27 template that was already exercised; `local-synthetic-champions.md`
+contains the local Docker command pattern and both local synthetic row notes.
+
 The worker uses `runAsUser: 0` and mounts an `emptyDir` tmpfs at the exact
 FlashInfer cubin path:
 
