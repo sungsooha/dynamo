@@ -5,16 +5,99 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nemotron-3-Ultra vLLM Recipe
 
+## QA Delivery Candidate
+
+The current QA delivery candidate stays on the old validated Patch06+humming
+base and adds only the reasoning API compatibility component plus the already
+validated Ultra installed-package patches. Dynamo `1.2.0` rc8 is a separate
+porting project and is not the default recipe image path.
+
+The reasoning compatibility proxy is:
+
+```text
+scripts/reasoning_api_compat_proxy.py
+```
+
+The proxy is enabled with `ENABLE_REASONING_API_PROXY=1`. It exposes the public
+OpenAI endpoint on `FRONTEND_PORT`, forwards internally to Dynamo frontend on
+`INNER_FRONTEND_PORT`, accepts the QA-owned top-level fields
+`include_reasoning`, `thinking_token_budget`, and `reasoning_effort`, and adds
+`usage.reasoning_tokens` / `usage.output_tokens_details.reasoning_tokens` when
+the backend returns `reasoning_content`.
+
+One-click reasoning QA entry point:
+
+```bash
+cd /path/to/dynamo/recipes/turbo-recipes/nemotron-3-ultra/vllm
+
+MODEL_PATH=/path/to/nemotron-ultra-ea-model-view \
+IMAGE=nemotron-3-ultra-vllm-reasoning:dev \
+BUILD_IMAGE=1 \
+GPU_SET=0,1,2,3 \
+PORT=18000 \
+ARTIFACT_ROOT=/tmp/nemotron-ultra/old-base-reasoning-qa \
+./qa_reasoning_api.sh all
+```
+
+The QA wrapper supports `launch`, `matrix`, `cleanup`, and `all`. Cleanup
+removes only containers with this run's `ultra-vllm-oldbase-qa-...` prefix.
+
+For the smallest QA fix layer on top of the already validated tailfix image,
+build with the validated digest as the base and disable reapplying the
+installed-package patches:
+
+```bash
+MODEL_PATH=/path/to/nemotron-ultra-ea-model-view \
+IMAGE=nemotron-3-ultra-vllm-reasoning:validated-tailfix-api \
+BUILD_IMAGE=1 \
+DOCKER_BUILD_ARGS="--build-arg BASE_IMAGE=nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-patch06-humming-mtp-ds-copy-ssm-tailfix-20260526T061806Z@sha256:b4a948fd7560ba072a46762bc026f1fefdac7ab276ed02798ffd1fc958a7cc3a --build-arg APPLY_MTP_DS_COPY_PATCH=0 --build-arg APPLY_SSM_NIXL_TAILFIX_PATCH=0 --build-arg ENABLE_REASONING_API_PROXY=1" \
+GPU_SET=0,1,2,3 \
+PORT=18000 \
+./qa_reasoning_api.sh all
+```
+
+The Dockerfile default still reproduces the validated tailfix image from the
+Patch06+humming base plus recipe-local patches. The override above is preferred
+for QA turnaround when the goal is specifically "validated image plus API
+compatibility proxy."
+
+## Promotion Exit Criteria
+
+The recipe is not delivery-ready from API smoke alone. Promotion requires all
+of the following evidence, generated through recipe entry points rather than
+one-off commands:
+
+- QA API matrix passes for bugs 6230473, 6230496, and 6230578, with raw
+  requests/responses and summarized JSON/TSV evidence.
+- Full GSM8K evaluation passes for vLLM framework baseline, Dynamo aggregate
+  without MTP, Dynamo aggregate with MTP, KV-aware routing disabled, and
+  KV-aware routing enabled.
+- A comparable 30% Moontrace benchmark row is reproduced against the accepted
+  recipe shape, with cache/router evidence, metrics, generated commands,
+  cleanup proof, and no hidden eager-mode evidence.
+- Recipe-driven end-to-end execution passes: build or pull image, launch from
+  recipe script, health/model/chat gates, workload, artifact collection, and
+  cleanup.
+- When a reserved 8-GPU host is available, independent lanes should run in
+  parallel on disjoint GPU sets and disjoint ports/artifact roots. Do not share
+  a server or artifact directory across concurrent lanes.
+
+See `PROMOTION_GATE.md` for the explicit evidence checklist.
+
+`ENFORCE_EAGER=1` is a debug-isolation knob only. It disables the normal
+compile/CUDA-graph path and cannot be used for QA-pass, benchmark gate, GSM8K,
+or promotion evidence unless explicitly labeled as debug-only.
+
 ## Image
 
 The recipe image is built by applying local patches on top of the accepted
-Patch06+humming base image.
-
-Base image:
+Patch06+humming base image:
 
 ```text
 nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
 ```
+
+The exact image creation lineage is recorded in `BASE_IMAGE_PROVENANCE.md`.
 
 Patches/features included by the recipe Dockerfile:
 
@@ -25,8 +108,10 @@ Patches/features included by the recipe Dockerfile:
   `patches/ds_copy_diag_installed_vllm.patch`
 - P/D SSM/NIXL prefix-cache tailfix:
   `patches/ssm_nixl_tailfix_installed_vllm.patch`
+- Reasoning API compatibility proxy:
+  `scripts/reasoning_api_compat_proxy.py`
 - FlashInfer cubin writable-path setup for non-root container runtime
-- Recipe launchers and bounded smoke wrapper
+- Recipe launchers, QA wrapper, and bounded smoke wrapper
 
 Build from the Dynamo repo root:
 
@@ -99,6 +184,14 @@ recipes/turbo-recipes/nemotron-3-ultra/vllm/benchmark.sh
 
 When `SPEC_TOKENS != 0`, `benchmark.sh` runs the DS-copy self-test before
 server startup.
+
+When the reasoning proxy is enabled, benchmark traffic defaults to the inner
+Dynamo endpoint so performance rows measure the model/router path rather than
+proxy overhead. API compatibility itself is covered by `qa_reasoning_api.sh`.
+
+For QA, benchmark, and GSM8K promotion evidence, keep `ENFORCE_EAGER` unset.
+If a non-eager startup fails, record that as the blocker and fix the normal
+runtime path rather than counting eager evidence.
 
 `benchmark.sh` is the preferred local smoke wrapper, but the aggregate server
 entrypoint it runs inside the container is:
@@ -257,20 +350,30 @@ USER_CONTEXT_PROMPT_LENGTH=6528 SYNTHETIC_INPUT_TOKENS_MEAN=26 OSL=400`.
 
 ## Kubernetes DGD Configs
 
-The checked-in manifests are namespace-neutral. Apply them with
-`kubectl -n <namespace> ...`.
+The checked-in manifests are namespace-neutral and use the proxy-enabled
+validated tailfix image for QA:
 
-- AGG1 chat/SWE non-MTP:
+```text
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-reasoning-api-validated-tailfix-20260528T070932Z@sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
+```
+
+Apply them with `kubectl -n <namespace> ...`. The public service port remains
+`8000`; the frontend container runs the reasoning API compatibility proxy on
+`8000` and the inner Dynamo frontend on `8001`. Worker serve args and resource
+shapes remain the recipe-specific AGG1, AGG2, or P/D contracts.
+
+- AGG1 chat/SWE aggregate:
   `agg1/deploy-chat-c40.yaml`, `agg1/deploy-swe-c27.yaml`,
   `aiperf/mooncake-chat-agg1-c40-job.yaml`,
   `aiperf/mooncake-swe-agg1-c27-job.yaml`.
-- AGG2 chat non-MTP:
+- AGG2 chat aggregate:
   `agg2/deploy-chat-c64.yaml`, `aiperf/mooncake-chat-agg2-c64-job.yaml`.
 - P/D 2P1D MTP1 SWE 30%:
   `disagg/deploy.yaml`, `aiperf/mooncake-swe-mtp1-pd2p1d-c20-job.yaml`.
-  This shape uses the tailfix image above. K8s tiny c1/r8 long-context probe
-  passed with 8/8 valid records; the 30% Moontrace performance row is still
-  pending and should not be promoted until transfer-latency isolation passes.
+  This shape uses the proxy-enabled tailfix image above. K8s same-node 1P1D
+  diagnostic probes passed c12/c16/c20 without server correctness failures,
+  but the 30% Moontrace performance row is still diagnostic and should not be
+  promoted until transfer-latency isolation passes on the target topology.
   It needs three clean 4-GPU B200 worker slots with RDMA.
 
 Generic DGD/job flow:
@@ -317,10 +420,11 @@ values. The K8s `deploy-swe-c27.yaml` Moontrace template currently uses
 SWE frontier used `65536`, so keep the manifest/result label explicit when
 comparing rows.
 
-For the P/D template, confirm the DGD uses the tailfix image before applying:
+For the P/D template, confirm the DGD uses the proxy-enabled tailfix image
+before applying:
 
 ```bash
-rg 'b4a948fd|ssm-tailfix|spec-method|spec-tokens|kv-transfer-config|disaggregation-mode' \
+rg 'bfa2d02|reasoning-api-proxy|spec-method|spec-tokens|kv-transfer-config|disaggregation-mode' \
   recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml
 ```
 

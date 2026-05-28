@@ -63,12 +63,17 @@ kubectl -n "${NAMESPACE}" logs "job/${JOB_NAME}"
 kubectl -n "${NAMESPACE}" delete -f "${JOB}" -f "${DGD}" --ignore-not-found
 ```
 
-The checked-in DGD uses the tailfix image and MTP1 flags:
+The checked-in DGD uses the proxy-enabled tailfix image and MTP1 flags:
 
 ```bash
-rg 'b4a948fd|ssm-tailfix|spec-method|spec-tokens|kv-transfer-config|disaggregation-mode' \
+rg 'bfa2d02|reasoning-api-proxy|spec-method|spec-tokens|kv-transfer-config|disaggregation-mode' \
   recipes/turbo-recipes/nemotron-3-ultra/vllm/disagg/deploy.yaml
 ```
+
+The public service remains on port `8000`; the reasoning API compatibility
+proxy listens there and forwards to the inner Dynamo frontend on `8001`.
+Prefill/decode worker commands, NIXL/UCX transfer args, and RDMA resources are
+the P/D recipe contract and should not change for API compatibility.
 
 Run only bounded probes first. The tailfix image has passed tiny long-context
 1P1D and K8s 2P1D traffic, but the local 1P1D 30% SWE c20 run exposed very

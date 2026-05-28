@@ -22,18 +22,27 @@ export DYN_LOG="${DYN_LOG:-info,dynamo_kv_router=debug,dynamo_llm::kv_router=deb
 
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-nemotron-ultra-ea}"
 FRONTEND_PORT="${FRONTEND_PORT:-18740}"
+ENABLE_REASONING_API_PROXY="${ENABLE_REASONING_API_PROXY:-0}"
+INNER_FRONTEND_PORT="${INNER_FRONTEND_PORT:-18741}"
+FRONTEND_BIND_PORT="${FRONTEND_PORT}"
+if [ "${ENABLE_REASONING_API_PROXY}" = "1" ]; then
+  FRONTEND_BIND_PORT="${INNER_FRONTEND_PORT}"
+fi
 TP="${TP:-4}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-32}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-32768}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-${GPU_MEMORY_UTILIZATION:-0.9}}"
 VLLM_BLOCK_SIZE="${VLLM_BLOCK_SIZE:-${BLOCK_SIZE:-64}}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
 REASONING_PARSER="${REASONING_PARSER:-nemotron3}"
 MAMBA_CACHE_MODE="${MAMBA_CACHE_MODE:-align}"
 SPEC_METHOD="${SPEC_METHOD:-}"
 SPEC_MODEL="${SPEC_MODEL:-}"
 SPEC_TOKENS="${SPEC_TOKENS:-0}"
+SPEC_CLI_STYLE="${SPEC_CLI_STYLE:-legacy}"
+SPECULATIVE_CONFIG="${SPECULATIVE_CONFIG:-}"
 AGG_WORKERS="${AGG_WORKERS:-1}"
 WORKER0_CVD="${WORKER0_CVD:-${WORKER_CVD:-0,1,2,3}}"
 WORKER1_CVD="${WORKER1_CVD:-4,5,6,7}"
@@ -50,9 +59,10 @@ fi
 LOG_DIR="${LOG_DIR:-/tmp/nemotron-ultra}"
 
 export MODEL_PATH SERVED_MODEL_NAME FRONTEND_PORT TP MAX_MODEL_LEN MAX_NUM_SEQS
-export MAX_BATCHED_TOKENS VLLM_GPU_MEMORY_UTILIZATION VLLM_BLOCK_SIZE
+export ENABLE_REASONING_API_PROXY INNER_FRONTEND_PORT FRONTEND_BIND_PORT
+export MAX_BATCHED_TOKENS VLLM_GPU_MEMORY_UTILIZATION VLLM_BLOCK_SIZE ENFORCE_EAGER
 export TOOL_PARSER REASONING_PARSER MAMBA_CACHE_MODE
-export SPEC_METHOD SPEC_MODEL SPEC_TOKENS AGG_WORKERS
+export SPEC_METHOD SPEC_MODEL SPEC_TOKENS SPEC_CLI_STYLE SPECULATIVE_CONFIG AGG_WORKERS
 export WORKER0_CVD WORKER1_CVD WORKER0_SYSTEM_PORT WORKER1_SYSTEM_PORT
 export WORKER0_KV_EVENTS_CONFIG WORKER1_KV_EVENTS_CONFIG LOG_DIR
 
@@ -79,9 +89,12 @@ keys = [
     "MAX_NUM_SEQS",
     "MAX_BATCHED_TOKENS",
     "VLLM_BLOCK_SIZE",
+    "ENFORCE_EAGER",
     "SPEC_METHOD",
     "SPEC_MODEL",
     "SPEC_TOKENS",
+    "SPEC_CLI_STYLE",
+    "SPECULATIVE_CONFIG",
     "AGG_WORKERS",
     "WORKER0_CVD",
     "WORKER1_CVD",
@@ -119,6 +132,9 @@ common_worker_args=(
   --reasoning-parser-plugin "${MODEL_PATH}/ultra_v3_reasoning_parser.py"
   --reasoning-parser nemotron_v3
 )
+if [ "${ENFORCE_EAGER}" = "1" ]; then
+  common_worker_args+=(--enforce-eager)
+fi
 
 speculative_args=()
 if [ "${SPEC_TOKENS}" != "0" ]; then
@@ -126,9 +142,20 @@ if [ "${SPEC_TOKENS}" != "0" ]; then
     echo "SPEC_METHOD must be set when SPEC_TOKENS=${SPEC_TOKENS}" >&2
     exit 2
   fi
-  speculative_args+=(--spec-method "${SPEC_METHOD}" --spec-tokens "${SPEC_TOKENS}")
-  if [ -n "${SPEC_MODEL}" ]; then
-    speculative_args+=(--spec-model "${SPEC_MODEL}")
+  if [ "${SPEC_CLI_STYLE}" = "legacy" ]; then
+    speculative_args+=(--spec-method "${SPEC_METHOD}" --spec-tokens "${SPEC_TOKENS}")
+    if [ -n "${SPEC_MODEL}" ]; then
+      speculative_args+=(--spec-model "${SPEC_MODEL}")
+    fi
+  else
+    if [ -z "${SPECULATIVE_CONFIG}" ]; then
+      if [ -n "${SPEC_MODEL}" ]; then
+        SPECULATIVE_CONFIG="$(python3 -c 'import json, os; print(json.dumps({"method": os.environ["SPEC_METHOD"], "num_speculative_tokens": int(os.environ["SPEC_TOKENS"]), "model": os.environ["SPEC_MODEL"]}))')"
+      else
+        SPECULATIVE_CONFIG="$(python3 -c 'import json, os; print(json.dumps({"method": os.environ["SPEC_METHOD"], "num_speculative_tokens": int(os.environ["SPEC_TOKENS"])}))')"
+      fi
+    fi
+    speculative_args+=(--speculative-config "${SPECULATIVE_CONFIG}")
   fi
 fi
 
@@ -141,7 +168,7 @@ frontend_args=(
   --kv-cache-block-size "${VLLM_BLOCK_SIZE}"
   --router-reset-states
   --http-host 0.0.0.0
-  --http-port "${FRONTEND_PORT}"
+  --http-port "${FRONTEND_BIND_PORT}"
 )
 
 printf '%q ' python3 -m dynamo.frontend "${frontend_args[@]}" >"${LOG_DIR}/status/vllm_frontend_command.txt"
@@ -153,6 +180,15 @@ if [ "${AGG_WORKERS}" = "1" ]; then
 else
   printf '%q ' python3 -m dynamo.vllm "${common_worker_args[@]}" "${speculative_args[@]}" --kv-events-config "${WORKER1_KV_EVENTS_CONFIG}" >"${LOG_DIR}/status/vllm_worker1_command.txt"
   printf '\n' >>"${LOG_DIR}/status/vllm_worker1_command.txt"
+fi
+if [ "${ENABLE_REASONING_API_PROXY}" = "1" ]; then
+  printf '%q ' python3 /opt/nemotron-ultra/reasoning_api_compat_proxy.py \
+    --listen-host 0.0.0.0 \
+    --listen-port "${FRONTEND_PORT}" \
+    --upstream "http://127.0.0.1:${FRONTEND_BIND_PORT}" \
+    --model-path "${MODEL_PATH}" \
+    >"${LOG_DIR}/status/reasoning_proxy_command.txt"
+  printf '\n' >>"${LOG_DIR}/status/reasoning_proxy_command.txt"
 fi
 
 python3 -m dynamo.frontend "${frontend_args[@]}" >"${LOG_DIR}/frontend.log" 2>&1 &
@@ -169,6 +205,16 @@ if [ "${AGG_WORKERS}" = "2" ]; then
   python3 -m dynamo.vllm "${common_worker_args[@]}" "${speculative_args[@]}" --kv-events-config "${WORKER1_KV_EVENTS_CONFIG}" \
     >"${LOG_DIR}/aggregate_worker1.log" 2>&1 &
   echo "$!" >"${LOG_DIR}/status/vllm_worker1.pid"
+fi
+
+if [ "${ENABLE_REASONING_API_PROXY}" = "1" ]; then
+  python3 /opt/nemotron-ultra/reasoning_api_compat_proxy.py \
+    --listen-host 0.0.0.0 \
+    --listen-port "${FRONTEND_PORT}" \
+    --upstream "http://127.0.0.1:${FRONTEND_BIND_PORT}" \
+    --model-path "${MODEL_PATH}" \
+    >"${LOG_DIR}/reasoning_proxy.log" 2>&1 &
+  echo "$!" >"${LOG_DIR}/status/reasoning_proxy.pid"
 fi
 
 wait -n

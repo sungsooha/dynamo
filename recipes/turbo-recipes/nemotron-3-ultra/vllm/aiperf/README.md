@@ -226,7 +226,10 @@ The AGG1 Moontrace jobs pair with these DGD manifests:
 
 Both AGG1 DGDs intentionally omit P/D transfer, UCX/NIXL transfer args, and
 `rdma/ib` resources. They also include the FlashInfer cubin writable-path fix
-required by the Patch06+humming image on K8s.
+required by the Patch06+humming image on K8s. The public service endpoint is
+the reasoning API proxy on port `8000`; benchmark jobs should keep using the
+service endpoint unless a run contract explicitly targets the inner frontend
+for proxy-overhead isolation.
 
 ## AGG2 K8s Pairing
 
@@ -237,3 +240,5 @@ required by the Patch06+humming image on K8s.
 AGG2 is aggregate routing evidence, not P/D or NIXL evidence. Run it in a
 separate namespace when another same-model DGD is live; same-namespace
 `/health` can list foreign generate backends.
+The public service endpoint is the reasoning API proxy on port `8000`; the
+inner Dynamo frontend is container-local port `8001`.

@@ -13,6 +13,16 @@ These manifests describe aggregate two-worker Dynamo/vLLM candidates:
 - no NIXL/UCX/RDMA transfer args
 - no `rdma/ib` resource request
 
+The template uses the proxy-enabled validated tailfix image:
+
+```text
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-reasoning-api-validated-tailfix-20260528T070932Z@sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
+```
+
+The public Kubernetes service remains on port `8000`. The frontend pod runs
+the reasoning API compatibility proxy on `8000` and the inner Dynamo frontend
+on `8001`; the two aggregate TP4 workers keep the recipe serve args below.
+
 The AGG2 chat template was server-side dry-run validated and endpoint-smoked in
 K8s, but its benchmark was intentionally stopped before AIPerf because another
 same-model DGD was live in the same Kubernetes namespace. Dynamo `/health`
@@ -54,3 +64,6 @@ The rendered worker command must contain `--max-num-seqs 32`,
 `--max-num-batched-tokens 32768`, and `--block-size 64`, and must not contain
 `--kv-transfer-config`, `NixlConnector`, `kv_role`, `--disaggregation-mode`, or
 `rdma/ib`.
+
+The rendered frontend command should expose the proxy on public port `8000`
+and forward to the inner Dynamo frontend on `8001`.

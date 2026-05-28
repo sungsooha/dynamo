@@ -15,11 +15,16 @@ evidence:
 - no NIXL/UCX/RDMA transfer args
 - no `rdma/ib` resource request
 
-Both templates use the accepted Patch06+humming image:
+Both templates use the proxy-enabled validated tailfix image:
 
 ```text
-nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
+nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-reasoning-api-validated-tailfix-20260528T070932Z@sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
 ```
+
+The public Kubernetes service remains on port `8000`. In the frontend pod,
+the reasoning API compatibility proxy listens on `8000` and forwards to the
+inner Dynamo frontend on `8001`. Worker topology, serve args, resources, PVCs,
+and secrets remain the aggregate recipe contract below.
 
 ## Templates
 
@@ -87,6 +92,10 @@ The rendered worker command must include the candidate-specific
 `--max-num-seqs`, `--max-num-batched-tokens`, and `--block-size` values above.
 It must not contain `--kv-transfer-config`, `NixlConnector`, `kv_role`,
 `--disaggregation-mode`, or `rdma/ib`.
+
+The rendered frontend command should show the proxy on public port `8000` and
+the inner Dynamo frontend on `8001`; `/health`, `/v1/models`, chat, and QA
+requests should all target the public service.
 
 Run the matching AIPerf jobs from `../aiperf/` only after KAI metadata,
 prestart GPU guard, readiness, `/health`, `/v1/models`, and exact short chat

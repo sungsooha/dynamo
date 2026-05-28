@@ -4,13 +4,19 @@
 #
 # Nemotron-3-Ultra turbo NIM vLLM draft recipe.
 #
-# Current accepted vLLM checkpoint: Patch06+humming plus Ultra MTP/P-D
-# installed-package patches.
+# Current QA delivery checkpoint: old validated Patch06+humming base plus
+# feature-scoped installed-package patches and the reasoning API compatibility
+# proxy. Dynamo 1.2.0 rc8 porting is tracked separately and is not the default
+# path in this Dockerfile.
 #
 # This Dockerfile starts from the published Patch06+humming image, applies the
-# installed-package Ultra patches, and embeds the recipe launch and validation
-# scripts. Patch06 and the installed-package patches are checked into patches/
-# for audit and future source rebuild work.
+# installed-package Ultra patches, installs the explicit reasoning API
+# compatibility proxy, and embeds the recipe launch and validation scripts.
+# Patch06 and the installed-package patches are checked into patches/ for audit
+# and future source rebuild work.
+#
+# Base image creation is documented in:
+#   BASE_IMAGE_PROVENANCE.md
 #
 # Patch06+humming base image provenance:
 # - vLLM main 1c78f76 + PR #42554 68dc38b + PR #42547 477556a
@@ -50,17 +56,21 @@
 ARG BASE_IMAGE="nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337"
 ARG APPLY_MTP_DS_COPY_PATCH=1
 ARG APPLY_SSM_NIXL_TAILFIX_PATCH=1
+ARG ENABLE_REASONING_API_PROXY=1
 
 FROM ${BASE_IMAGE}
 USER root
 
+ARG BASE_IMAGE
 ARG APPLY_MTP_DS_COPY_PATCH
 ARG APPLY_SSM_NIXL_TAILFIX_PATCH
+ARG ENABLE_REASONING_API_PROXY
 
 COPY --chmod=755 --chown=root:0 \
   scripts/apply_ds_copy_patch_in_container.py \
   scripts/apply_ssm_nixl_tailfix_in_container.py \
   scripts/ds_copy_selftest.py \
+  scripts/reasoning_api_compat_proxy.py \
   /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/
 
 COPY --chmod=644 --chown=root:0 \
@@ -76,34 +86,51 @@ RUN if [ "${APPLY_MTP_DS_COPY_PATCH}" = "1" ]; then \
       python3 /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/apply_ssm_nixl_tailfix_in_container.py \
         --diff-out /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/patches/ssm_nixl_tailfix_applied_at_build.patch; \
     fi && \
+    if [ "${ENABLE_REASONING_API_PROXY}" = "1" ]; then \
+      install -D -m 0755 \
+        /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/scripts/reasoning_api_compat_proxy.py \
+        /opt/nemotron-ultra/reasoning_api_compat_proxy.py; \
+      python3 -m py_compile /opt/nemotron-ultra/reasoning_api_compat_proxy.py; \
+    fi && \
+    APPLY_MTP_DS_COPY_PATCH="${APPLY_MTP_DS_COPY_PATCH}" \
+    APPLY_SSM_NIXL_TAILFIX_PATCH="${APPLY_SSM_NIXL_TAILFIX_PATCH}" \
+    ENABLE_REASONING_API_PROXY="${ENABLE_REASONING_API_PROXY}" \
     python3 - <<'PY'
 import importlib
+import os
 import pathlib
 
 vllm = importlib.import_module("vllm")
 root = pathlib.Path(vllm.__file__).resolve().parent
-required = {
-    "model_executor/layers/mamba/mamba_utils.py": [
-        "HELIX_ULTRA_MTP_DS_COPY_DIAG",
-        "ds_conv_tail",
-    ],
-    "v1/worker/mamba_utils.py": [
-        "HELIX_ULTRA_MTP_DS_COPY_DIAG",
-        "ds_conv_tail_copy",
-    ],
-    "distributed/kv_transfer/kv_connector/v1/nixl/worker.py": [
+required = {}
+if os.environ.get("APPLY_MTP_DS_COPY_PATCH") == "1":
+    required.update({
+        "model_executor/layers/mamba/mamba_utils.py": [
+            "HELIX_ULTRA_MTP_DS_COPY_DIAG",
+            "ds_conv_tail",
+        ],
+        "v1/worker/mamba_utils.py": [
+            "HELIX_ULTRA_MTP_DS_COPY_DIAG",
+            "ds_conv_tail_copy",
+        ],
+    })
+if os.environ.get("APPLY_SSM_NIXL_TAILFIX_PATCH") == "1":
+    required["distributed/kv_transfer/kv_connector/v1/nixl/worker.py"] = [
         "NEMOTRON_ULTRA_SSM_NIXL_TAILFIX",
         "SSM group has no local blocks to receive",
-    ],
-}
+    ]
 missing = []
 for rel, markers in required.items():
     text = (root / rel).read_text(errors="ignore")
     for marker in markers:
         if marker not in text:
             missing.append(f"{rel}:{marker}")
+if os.environ.get("ENABLE_REASONING_API_PROXY") == "1":
+    proxy = pathlib.Path("/opt/nemotron-ultra/reasoning_api_compat_proxy.py")
+    if not proxy.exists():
+        missing.append(str(proxy))
 if missing:
-    raise RuntimeError(f"Ultra MTP DS-copy markers missing: {missing}")
+    raise RuntimeError(f"Ultra recipe markers missing: {missing}")
 PY
 
 RUN set -eux; \
@@ -139,6 +166,13 @@ COPY --chmod=755 --chown=dynamo:0 \
   launch_decode.sh \
   launch_aggregate.sh \
   benchmark.sh \
+  qa_reasoning_api.sh \
   /workspace/recipes/turbo-recipes/nemotron-3-ultra/vllm/
+
+LABEL nemotron-ultra.recipe.base="old-validated-ultra" \
+      nemotron-ultra.recipe.base_image="${BASE_IMAGE}" \
+      nemotron-ultra.recipe.reasoning_api_proxy="${ENABLE_REASONING_API_PROXY}" \
+      nemotron-ultra.recipe.mtp_ds_copy_patch="${APPLY_MTP_DS_COPY_PATCH}" \
+      nemotron-ultra.recipe.ssm_nixl_tailfix_patch="${APPLY_SSM_NIXL_TAILFIX_PATCH}"
 
 USER dynamo

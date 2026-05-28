@@ -12,7 +12,8 @@ metadata:
     nemotron-ultra.nvidia.com/status: agg1-moontrace-newpvc-candidate
     nemotron-ultra.nvidia.com/not-pd-evidence: "true"
     nemotron-ultra.nvidia.com/evidence-scope: aggregate_k8s_moontrace_not_pd_not_nixl
-    nemotron-ultra.nvidia.com/image-digest: sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
+    nemotron-ultra.nvidia.com/image-digest: sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
+    nemotron-ultra.nvidia.com/reasoning-api-proxy: enabled-public-8000-inner-8001
     nemotron-ultra.nvidia.com/action-id: K8S_VLLM_PATCH06_AGG1_MOONTRACE_CHAT_C40_256K_NEWPVC
 spec:
   backendFramework: vllm
@@ -81,18 +82,43 @@ spec:
             - name: nvcr-secret
           containers:
             - name: main
-              image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
+              image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-reasoning-api-validated-tailfix-20260528T070932Z@sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
               imagePullPolicy: IfNotPresent
               command: ["/bin/bash", "-lc"]
               args:
                 - |
-                  exec python3 -m dynamo.frontend \
+                  set -Eeuo pipefail
+                  export FRONTEND_PORT=8000
+                  export INNER_FRONTEND_PORT=8001
+                  export ENABLE_REASONING_API_PROXY=1
+                  mkdir -p "${LOG_DIR:-/tmp/nemotron-ultra}/status"
+                  frontend_args=(
                     --router-mode kv \
                     --router-kv-events \
                     --kv-cache-block-size 32 \
                     --router-reset-states \
                     --http-host 0.0.0.0 \
-                    --http-port 8000
+                    --http-port "${INNER_FRONTEND_PORT}"
+                  )
+                  printf '%q ' python3 -m dynamo.frontend "${frontend_args[@]}" >"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend_command.txt"
+                  printf '\n' >>"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend_command.txt"
+                  printf '%q ' python3 /opt/nemotron-ultra/reasoning_api_compat_proxy.py \
+                    --listen-host 0.0.0.0 \
+                    --listen-port "${FRONTEND_PORT}" \
+                    --upstream "http://127.0.0.1:${INNER_FRONTEND_PORT}" \
+                    --model-path "${MODEL_PATH}" \
+                    >"${LOG_DIR:-/tmp/nemotron-ultra}/status/reasoning_proxy_command.txt"
+                  printf '\n' >>"${LOG_DIR:-/tmp/nemotron-ultra}/status/reasoning_proxy_command.txt"
+                  python3 -m dynamo.frontend "${frontend_args[@]}" >"${LOG_DIR:-/tmp/nemotron-ultra}/frontend.log" 2>&1 &
+                  echo "$!" >"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend.pid"
+                  python3 /opt/nemotron-ultra/reasoning_api_compat_proxy.py \
+                    --listen-host 0.0.0.0 \
+                    --listen-port "${FRONTEND_PORT}" \
+                    --upstream "http://127.0.0.1:${INNER_FRONTEND_PORT}" \
+                    --model-path "${MODEL_PATH}" \
+                    >"${LOG_DIR:-/tmp/nemotron-ultra}/reasoning_proxy.log" 2>&1 &
+                  echo "$!" >"${LOG_DIR:-/tmp/nemotron-ultra}/status/reasoning_proxy.pid"
+                  wait -n
               ports:
                 - name: http
                   containerPort: 8000
@@ -149,7 +175,7 @@ spec:
               effect: NoSchedule
           containers:
             - name: main
-              image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-upstream-pd-mamba-patch06-humming-20260521@sha256:23aca0f5c5a332e5ddd69899ed2026cdf7abee5c28a4f2b96d54915e2211a337
+              image: nvcr.io/nvstaging/nim/sungsooh:nemotron-ultra-vllm-reasoning-api-validated-tailfix-20260528T070932Z@sha256:bfa2d02fd0dd1daab3fd41e4f2acfd8b131c44b49f0a4282937b5716e04fc265
               imagePullPolicy: IfNotPresent
               workingDir: /workspace
               command: ["/bin/bash", "-lc"]
