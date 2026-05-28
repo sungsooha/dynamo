@@ -14,6 +14,10 @@
 # compatibility proxy, and embeds the recipe launch and validation scripts.
 # Patch06 and the installed-package patches are checked into patches/ for audit
 # and future source rebuild work.
+# The full delivery boundary file map is:
+#   patches/PATCH_BOUNDARIES.md
+# The reasoning API proxy is a standalone runtime component under scripts/,
+# not a vLLM installed-package diff.
 #
 # Base image creation is documented in:
 #   BASE_IMAGE_PROVENANCE.md
@@ -30,6 +34,7 @@
 # Ultra installed-package patch provenance:
 # - diagnostic patch: patches/ds_copy_diag_installed_vllm.patch
 # - P/D SSM/NIXL tailfix: patches/ssm_nixl_tailfix_installed_vllm.patch
+# - reasoning API proxy: scripts/reasoning_api_compat_proxy.py
 # - patch source: work-tracker/helix-vllm
 #   projects/nemotron-ultra/mtp-ds-copy-diagnostic
 # - validated non-bypass config: VLLM_SSM_CONV_STATE_LAYOUT=DS,

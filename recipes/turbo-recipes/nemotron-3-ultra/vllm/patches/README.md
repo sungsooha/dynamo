@@ -102,14 +102,19 @@ ssm_nixl_tailfix_installed_vllm.patch sha256:
 
 Keep final patches/components independently reviewable:
 
+The exact file map is in `PATCH_BOUNDARIES.md`.
+
 - `01_patch06_humming_base`: provenance only; already included in the base
-  image documented by `../BASE_IMAGE_PROVENANCE.md`.
+  image documented by `../BASE_IMAGE_PROVENANCE.md`; source delta is
+  `06_vllm_patch02_hash_block_event_port_after_pr42547.patch`.
 - `02_vllm_mtp_ds_copy`: `ds_copy_diag_installed_vllm.patch` plus
   `scripts/apply_ds_copy_patch_in_container.py`.
 - `03_vllm_pd_ssm_nixl_tailfix`: `ssm_nixl_tailfix_installed_vllm.patch` plus
   `scripts/apply_ssm_nixl_tailfix_in_container.py`.
 - `04_dynamo_reasoning_api_compat_proxy`:
   `scripts/reasoning_api_compat_proxy.py` plus launch/QA wrapper plumbing.
+  This is a standalone runtime component installed by the Dockerfile, not a
+  patch applied to the vLLM package, so there is no separate `04_*.patch` file.
 
 Do not combine rc8 porting changes with the old-base QA delivery image. rc8
 startup, Patch06 re-adaptation, metakind, and router/admission parity remain a

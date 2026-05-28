@@ -148,7 +148,7 @@ payload = {
   "enforce_eager": "${ENFORCE_EAGER}" == "1",
   "evidence_class": "${EVIDENCE_CLASS}",
   "promotion_eligible": "${PROMOTION_ELIGIBLE}" == "true",
-  "reasoning_api_component": "06_dynamo_reasoning_api_compat_proxy",
+  "reasoning_api_component": "04_dynamo_reasoning_api_compat_proxy",
   "recipe_base": "patch06-humming-20260521",
   "dashboard_row_ready": "no",
   "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
