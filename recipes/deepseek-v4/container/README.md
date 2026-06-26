@@ -83,7 +83,7 @@ Build-time validation checks:
   plain vLLM image.
 - the vLLM version string contains the expected nightly git SHA prefix.
 - the installed `mtp.py` SHA256 is
-  `1b599ddfe6f578c1e98551ceceead599e3cae24534427a84462143c6eac86f30`.
+  `4fd6a700a77ef920ccf0da42a258edf273fdfd5671e68e6a0adbfbe6d5582e3d`.
 - the Flash-only BF16 projection markers are present.
 
 The Flash MTP overlay is gated by `config.hidden_size == 4096`; Pro's 7168-wide

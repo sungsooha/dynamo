@@ -5,7 +5,7 @@ Dynamo vLLM runtime build.
 
 ```text
 target=vllm/models/deepseek_v4/nvidia/mtp.py
-sha256=1b599ddfe6f578c1e98551ceceead599e3cae24534427a84462143c6eac86f30
+sha256=4fd6a700a77ef920ccf0da42a258edf273fdfd5671e68e6a0adbfbe6d5582e3d
 required_for=DeepSeek-V4-Flash MTP1
 not_required_for=DeepSeek-V4-Pro MTP
 ```
