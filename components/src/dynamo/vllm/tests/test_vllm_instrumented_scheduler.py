@@ -12,10 +12,12 @@ spinning up vLLM engine internals.
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from vllm.v1.core.sched.async_scheduler import AsyncScheduler  # noqa: E402
 from vllm.v1.request import RequestStatus  # noqa: E402
 
 # Module-level import: triggers real site-packages ``vllm`` to load before
@@ -493,6 +495,30 @@ def test_decode_sweep_empty_frame_no_connector_leaves_metadata_none():
 
     assert out.kv_connector_metadata is None
     assert out.ec_connector_metadata is None
+
+
+def test_schedule_forwards_parent_args_when_not_benchmarking(monkeypatch):
+    """vLLM may call ``schedule(should_throttle_prefills)`` in async mode."""
+    calls = []
+    output = SimpleNamespace(total_num_scheduled_tokens=1)
+
+    def fake_parent_schedule(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return output
+
+    monkeypatch.setattr(AsyncScheduler, "schedule", fake_parent_schedule)
+
+    stub = InstrumentedScheduler.__new__(InstrumentedScheduler)
+    stub._bench_active = False
+    stub._schedule_times = deque()
+
+    result = InstrumentedScheduler.schedule(
+        stub, True, should_throttle_prefills=False
+    )
+
+    assert result is output
+    assert calls == [((True,), {"should_throttle_prefills": False})]
+    assert len(stub._schedule_times) == 1
 
 
 # ---------------------------------------------------------------------------
