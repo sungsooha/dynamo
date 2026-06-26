@@ -34,6 +34,7 @@ WORKDIR /workspace
 
 ENV DYNAMO_HOME=/opt/dynamo
 ENV HOME=/home/dynamo
+ENV FLASHINFER_WORKSPACE_BASE=/home/dynamo
 {% if device != "cuda" %}
 ENV PATH=/usr/local/ucx/bin:/usr/local/bin/etcd:${PATH}
 {% else %}
@@ -84,9 +85,13 @@ COPY --from=dynamo_base /bin/uv /bin/uvx /bin/
 RUN userdel -r ubuntu > /dev/null 2>&1 || true \
     && useradd -u 1000 -m -s /bin/bash -g 0 dynamo \
     && [ `id -u dynamo` -eq 1000 ] \
-    && mkdir -p /home/dynamo/.cache /opt/dynamo \
+    && mkdir -p /home/dynamo/.cache/flashinfer /opt/dynamo \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
-    && chown dynamo:0 /home/dynamo /home/dynamo/.cache /opt/dynamo /workspace \
+    && chown -R dynamo:0 /home/dynamo /home/dynamo/.cache /opt/dynamo /workspace \
+    && if [ -d "${SITE_PACKAGES}/flashinfer_cubin/cubins" ]; then \
+        chown -R dynamo:0 "${SITE_PACKAGES}/flashinfer_cubin/cubins" && \
+        chmod -R g+rwX "${SITE_PACKAGES}/flashinfer_cubin/cubins"; \
+    fi \
     && mkdir -p /etc/profile.d \
     && echo 'umask 002' > /etc/profile.d/00-umask.sh
 
