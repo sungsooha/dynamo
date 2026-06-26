@@ -11,6 +11,7 @@ RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-nightly@sha256:284f3b942010553d2db3386ff
 VLLM_GIT_SHA="${VLLM_GIT_SHA:-3f5a1e1733200760169ff31ebe60a271072b199e}"
 TARGET_IMAGE="${TARGET_IMAGE:-dynamo-vllm-runtime:dsv4-cu130-nightly}"
 PUSH="${PUSH:-0}"
+BUILD_TARGET="${BUILD_TARGET:-pre_runtime}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
@@ -27,7 +28,7 @@ python3 container/render.py \
 
 ${DOCKER_CMD} build \
   --pull=false \
-  --target runtime \
+  --target "${BUILD_TARGET}" \
   --platform "${PLATFORM}" \
   -f container/rendered.Dockerfile \
   --build-arg "RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
@@ -71,3 +72,4 @@ if [[ "${PUSH}" == "1" ]]; then
 fi
 
 echo "TARGET_IMAGE=${TARGET_IMAGE}"
+echo "BUILD_TARGET=${BUILD_TARGET}"
