@@ -39,7 +39,10 @@ ${DOCKER_CMD} build \
   -t "${TARGET_IMAGE}" \
   .
 
-${DOCKER_CMD} run --rm --entrypoint=python3 "${TARGET_IMAGE}" - <<'PY'
+${DOCKER_CMD} run --rm -i \
+  --entrypoint=python3 \
+  -e PYTHONPYCACHEPREFIX=/tmp/pycache \
+  "${TARGET_IMAGE}" - <<'PY'
 import hashlib
 import importlib
 import importlib.metadata as metadata
@@ -48,6 +51,7 @@ from pathlib import Path
 import py_compile
 
 importlib.import_module("dynamo")
+importlib.import_module("dynamo.vllm")
 
 spec = importlib.util.find_spec("vllm")
 if spec is None or not spec.submodule_search_locations:
@@ -65,6 +69,7 @@ print(f"vllm_version={metadata.version('vllm')}")
 print(f"patch_file={path}")
 print(f"patch_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
 print("dynamo_import=ok")
+print("dynamo_vllm_import=ok")
 PY
 
 if [[ "${PUSH}" == "1" ]]; then
