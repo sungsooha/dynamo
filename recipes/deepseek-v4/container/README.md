@@ -7,8 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 Shared reference Dockerfiles for the DeepSeek-V4 family — used by both [`deepseek-v4-flash`](../deepseek-v4-flash/) and [`deepseek-v4-pro`](../deepseek-v4-pro/). Nothing in either image is recipe-specific; the model is selected at runtime via `--model-path` (SGLang).
 
-| Backend | Dockerfile | Base image | Build flow |
+| Backend | Dockerfile / script | Base image | Build flow |
 |---------|-----------|-----------|------------|
+| vLLM (CUDA 13 / DSV4) | [`vllm/build_dsv4_vllm_runtime.sh`](vllm/build_dsv4_vllm_runtime.sh) | `vllm/vllm-openai:nightly@sha256:284f3b942010553d2db3386ff6a0b1cc981cd1d3f653ca094fcfd8c4e3436e97` | Standard Dynamo vLLM runtime render plus opt-in DSV4 Flash MTP overlay |
 | SGLang (B200)  | [`sglang/Dockerfile.dsv4.sglang.b200`](sglang/Dockerfile.dsv4.sglang.b200)   | `lmsysorg/sglang:deepseek-v4-blackwell` (digest-pinned, amd64)       | Two-stage; Dynamo runtime image as donor |
 | SGLang (GB200) | [`sglang/Dockerfile.dsv4.sglang.gb200`](sglang/Dockerfile.dsv4.sglang.gb200) | `lmsysorg/sglang:deepseek-v4-grace-blackwell` (digest-pinned, arm64) | Two-stage; Dynamo runtime image as donor |
 
@@ -19,7 +20,74 @@ NVIDIA also publishes the prebuilt images for vLLM and SGLang which manifests pu
 
 The `cudaXY` suffix encodes the CUDA major version baked into the image, not the hardware target.
 
-> **Optional:** users may also build the standard Dynamo vLLM runtime image via `container/render.py`. See [`<repo_root>/container/README.md`](../../../container/README.md).
+## vLLM (`vllm/build_dsv4_vllm_runtime.sh`)
+
+Use this path when a Dynamo runtime image must include the current vLLM CUDA 13
+nightly NVFP4/Hopper support. The plain upstream image imports vLLM but does not
+contain the Dynamo runtime package, so it cannot back a Dynamo DGD by itself.
+This build starts from the same upstream vLLM nightly image, layers the standard
+Dynamo runtime wheels/NIXL/NATS/ETCD through `container/render.py`, and applies
+the DeepSeek-V4 Flash MTP BF16 projection overlay.
+
+The current pinned upstream image is:
+
+```text
+image=vllm/vllm-openai:nightly@sha256:284f3b942010553d2db3386ff6a0b1cc981cd1d3f653ca094fcfd8c4e3436e97
+tag_label=vllm/vllm-openai:nightly-3f5a1e1733200760169ff31ebe60a271072b199e
+cuda=13.0
+required_vllm_commit=3f5a1e1733200760169ff31ebe60a271072b199e
+```
+
+That image family contains the NVFP4 support needed for H100/H200/Hopper
+preflights. Do not use the `cu129` variant for official Dynamo runtime builds.
+The script default is `PLATFORM=linux/amd64`; if building arm64, use the
+matching arm64 digest instead of the amd64 digest above.
+
+### Build
+
+From the **repo root**:
+
+```bash
+DOCKER_CMD="docker" \
+TARGET_IMAGE="<your-registry>/dynamo-vllm-runtime:dsv4-cu130-nightly-3f5a1e173" \
+PUSH=0 \
+recipes/deepseek-v4/container/vllm/build_dsv4_vllm_runtime.sh
+```
+
+The script renders `container/rendered.Dockerfile` and builds the `runtime`
+target with these DSV4-specific build args:
+
+```text
+RUNTIME_IMAGE=vllm/vllm-openai
+RUNTIME_IMAGE_TAG=nightly@sha256:284f3b942010553d2db3386ff6a0b1cc981cd1d3f653ca094fcfd8c4e3436e97
+DSV4_FLASH_MTP_BF16_PATCH=true
+DSV4_EXPECT_VLLM_GIT_SHA=3f5a1e1733200760169ff31ebe60a271072b199e
+```
+
+The patch asset is copied from:
+
+```text
+container/deps/vllm/patches/deepseek-v4/flash_mtp_bf16_projection/mtp.py
+```
+
+and installed over:
+
+```text
+vllm/models/deepseek_v4/nvidia/mtp.py
+```
+
+Build-time validation checks:
+
+- `import vllm` works.
+- `import dynamo` works, proving this is a Dynamo runtime image rather than a
+  plain vLLM image.
+- the vLLM version string contains the expected nightly git SHA prefix.
+- the installed `mtp.py` SHA256 is
+  `1b599ddfe6f578c1e98551ceceead599e3cae24534427a84462143c6eac86f30`.
+- the Flash-only BF16 projection markers are present.
+
+The Flash MTP overlay is gated by `config.hidden_size == 4096`; Pro's 7168-wide
+MTP path is intentionally untouched.
 
 ## SGLang (`sglang/Dockerfile.dsv4.sglang.b200`)
 

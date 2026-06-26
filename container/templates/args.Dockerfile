@@ -108,6 +108,12 @@ ARG DEEPGEMM_REF=""
 
 # aws-sdk-cpp tag for the NIXL OBJ / S3 backend (built in wheel_builder).
 ARG AWS_SDK_CPP_VERSION={{ context.vllm.aws_sdk_cpp_version }}
+
+# Optional DeepSeek-V4 runtime overlay. This is intentionally opt-in so the
+# default vLLM runtime image remains a plain upstream vLLM + Dynamo build.
+ARG DSV4_FLASH_MTP_BF16_PATCH="false"
+ARG DSV4_EXPECT_VLLM_GIT_SHA=""
+ARG DSV4_EXPECT_FLASH_MTP_SHA256="1b599ddfe6f578c1e98551ceceead599e3cae24534427a84462143c6eac86f30"
 {% endif %}
 {%- endif -%}
 
