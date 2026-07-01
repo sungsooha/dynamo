@@ -26,8 +26,11 @@ ARG CUDA_MAJOR
 ARG MODELEXPRESS_VERSION
 {% if device == "cuda" %}
 ARG DSV4_FLASH_MTP_BF16_PATCH
+ARG DSV4_PER_RANK_NIC_PATCH
 ARG DSV4_EXPECT_VLLM_GIT_SHA
 ARG DSV4_EXPECT_FLASH_MTP_SHA256
+ARG DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256
+ARG DSV4_EXPECT_PER_RANK_NIC_SHA256
 {% endif %}
 
 WORKDIR /workspace
@@ -230,6 +233,24 @@ RUN --mount=type=bind,source=./container/deps/vllm/patches/deepseek-v4/flash_mtp
             --require-dynamo; \
     else \
         echo "DSV4 Flash MTP BF16 patch disabled"; \
+    fi
+
+# Optional DSV4 NIXL per-rank NIC overlay. This copies one Python file into
+# the installed upstream vLLM package and validates both the base-file SHA and
+# patched SHA. The overlay lets each TP rank select a distinct UCX HCA through
+# UCX_NET_DEVICES_BY_RANK before NIXL creates its backend.
+RUN --mount=type=bind,source=./container/deps/vllm/patches/nightly-4559c43a/per_rank_nic/base_worker.py,target=/tmp/dsv4_per_rank_nic/base_worker.py,readonly \
+    --mount=type=bind,source=./container/deps/vllm/validate_dsv4_per_rank_nic_runtime.py,target=/tmp/validate_dsv4_per_rank_nic_runtime.py,readonly \
+    set -eux; \
+    if [ "${DSV4_PER_RANK_NIC_PATCH}" = "true" ]; then \
+        python3 /tmp/validate_dsv4_per_rank_nic_runtime.py \
+            --patch-source /tmp/dsv4_per_rank_nic/base_worker.py \
+            --expect-vllm-git-sha "${DSV4_EXPECT_VLLM_GIT_SHA}" \
+            --expect-target-pre-sha256 "${DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256}" \
+            --expect-sha256 "${DSV4_EXPECT_PER_RANK_NIC_SHA256}" \
+            --require-dynamo; \
+    else \
+        echo "DSV4 per-rank NIC patch disabled"; \
     fi
 
 {% endif %}
