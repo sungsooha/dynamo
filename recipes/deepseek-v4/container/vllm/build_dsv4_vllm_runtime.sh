@@ -7,13 +7,16 @@ set -euo pipefail
 DOCKER_CMD="${DOCKER_CMD:-docker}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 RUNTIME_IMAGE="${RUNTIME_IMAGE:-vllm/vllm-openai}"
-RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-nightly-4559c43a9526597c00cbcc4f59979496500268d1@sha256:7feb2a09304e3b2d38e224a100316e84fe3205faa7605060609e2c02179cbca6}"
-VLLM_GIT_SHA="${VLLM_GIT_SHA:-4559c43a9526597c00cbcc4f59979496500268d1}"
-TARGET_IMAGE="${TARGET_IMAGE:-dynamo-vllm-runtime:dsv4-cu130-nightly-4559c43a-per-rank-nic}"
+RUNTIME_IMAGE_TAG="${RUNTIME_IMAGE_TAG:-v0.24.0@sha256:f9de5cd9fa907fbf6dbba691eb7db095d48ad58ea283e3eba7142f9a91e186e8}"
+VLLM_GIT_SHA="${VLLM_GIT_SHA:-ee0da84ab9e04ac7610e28580af62c365e898389}"
+VLLM_VERSION="${VLLM_VERSION:-0.24.0}"
+TARGET_IMAGE="${TARGET_IMAGE:-nvcr.io/nvstaging/nim/sungsooh:dsv4-dynamo-vllm-cu130-v0240-ee0da84a-flashmtp-20260701}"
 PUSH="${PUSH:-0}"
-BUILD_TARGET="${BUILD_TARGET:-pre_runtime}"
-DSV4_FLASH_MTP_BF16_PATCH="${DSV4_FLASH_MTP_BF16_PATCH:-false}"
-DSV4_PER_RANK_NIC_PATCH="${DSV4_PER_RANK_NIC_PATCH:-true}"
+BUILD_TARGET="${BUILD_TARGET:-runtime}"
+DSV4_FLASH_MTP_BF16_PATCH="${DSV4_FLASH_MTP_BF16_PATCH:-true}"
+DSV4_PER_RANK_NIC_PATCH="${DSV4_PER_RANK_NIC_PATCH:-false}"
+DSV4_PACKED_KV_RDMA_PATCH="${DSV4_PACKED_KV_RDMA_PATCH:-false}"
+DSV4_DSPARK_PR46995_PATCH="${DSV4_DSPARK_PR46995_PATCH:-false}"
 DSV4_EXPECT_FLASH_MTP_SHA256="${DSV4_EXPECT_FLASH_MTP_SHA256:-4fd6a700a77ef920ccf0da42a258edf273fdfd5671e68e6a0adbfbe6d5582e3d}"
 DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256="${DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256:-d459c858e5bd4cfcb73be441cfefa6529d1c14def8a64314eb9dce8fde629878}"
 DSV4_EXPECT_PER_RANK_NIC_SHA256="${DSV4_EXPECT_PER_RANK_NIC_SHA256:-2a5080698a240db2fc51ac37821eeae7dc18fbd9fcbfec40c4ba779041fa5b5b}"
@@ -41,6 +44,7 @@ ${DOCKER_CMD} build \
   --build-arg "DSV4_FLASH_MTP_BF16_PATCH=${DSV4_FLASH_MTP_BF16_PATCH}" \
   --build-arg "DSV4_PER_RANK_NIC_PATCH=${DSV4_PER_RANK_NIC_PATCH}" \
   --build-arg "DSV4_EXPECT_VLLM_GIT_SHA=${VLLM_GIT_SHA}" \
+  --build-arg "DSV4_EXPECT_VLLM_VERSION=${VLLM_VERSION}" \
   --build-arg "DSV4_EXPECT_FLASH_MTP_SHA256=${DSV4_EXPECT_FLASH_MTP_SHA256}" \
   --build-arg "DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256=${DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256}" \
   --build-arg "DSV4_EXPECT_PER_RANK_NIC_SHA256=${DSV4_EXPECT_PER_RANK_NIC_SHA256}" \
@@ -53,6 +57,7 @@ ${DOCKER_CMD} run --rm -i \
   -e PYTHONPYCACHEPREFIX=/tmp/pycache \
   -e DSV4_FLASH_MTP_BF16_PATCH="${DSV4_FLASH_MTP_BF16_PATCH}" \
   -e DSV4_PER_RANK_NIC_PATCH="${DSV4_PER_RANK_NIC_PATCH}" \
+  -e DSV4_EXPECT_VLLM_VERSION="${VLLM_VERSION}" \
   -e DSV4_EXPECT_FLASH_MTP_SHA256="${DSV4_EXPECT_FLASH_MTP_SHA256}" \
   -e DSV4_EXPECT_PER_RANK_NIC_SHA256="${DSV4_EXPECT_PER_RANK_NIC_SHA256}" \
   "${TARGET_IMAGE}" - <<'PY'
@@ -106,6 +111,12 @@ if os.environ["DSV4_PER_RANK_NIC_PATCH"] == "true":
             f"actual={base_worker_sha} expected={expected_base_worker_sha}"
         )
 print(f"vllm_version={metadata.version('vllm')}")
+expected_vllm_version = os.environ["DSV4_EXPECT_VLLM_VERSION"]
+if expected_vllm_version and metadata.version("vllm") != expected_vllm_version:
+    raise SystemExit(
+        "unexpected vLLM version: "
+        f"actual={metadata.version('vllm')} expected={expected_vllm_version}"
+    )
 print(f"mtp_file={path}")
 print(f"mtp_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
 print(f"base_worker_file={base_worker}")
@@ -120,5 +131,8 @@ fi
 
 echo "TARGET_IMAGE=${TARGET_IMAGE}"
 echo "BUILD_TARGET=${BUILD_TARGET}"
+echo "VLLM_VERSION=${VLLM_VERSION}"
 echo "DSV4_FLASH_MTP_BF16_PATCH=${DSV4_FLASH_MTP_BF16_PATCH}"
 echo "DSV4_PER_RANK_NIC_PATCH=${DSV4_PER_RANK_NIC_PATCH}"
+echo "DSV4_PACKED_KV_RDMA_PATCH=${DSV4_PACKED_KV_RDMA_PATCH}"
+echo "DSV4_DSPARK_PR46995_PATCH=${DSV4_DSPARK_PR46995_PATCH}"

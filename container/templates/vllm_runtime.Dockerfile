@@ -28,6 +28,7 @@ ARG MODELEXPRESS_VERSION
 ARG DSV4_FLASH_MTP_BF16_PATCH
 ARG DSV4_PER_RANK_NIC_PATCH
 ARG DSV4_EXPECT_VLLM_GIT_SHA
+ARG DSV4_EXPECT_VLLM_VERSION
 ARG DSV4_EXPECT_FLASH_MTP_SHA256
 ARG DSV4_EXPECT_PER_RANK_NIC_BASE_SHA256
 ARG DSV4_EXPECT_PER_RANK_NIC_SHA256
@@ -229,6 +230,7 @@ RUN --mount=type=bind,source=./container/deps/vllm/patches/deepseek-v4/flash_mtp
         python3 /tmp/install_validate_dsv4_runtime.py \
             --patch-source /tmp/dsv4_flash_mtp_bf16/mtp.py \
             --expect-vllm-git-sha "${DSV4_EXPECT_VLLM_GIT_SHA}" \
+            --expect-vllm-version "${DSV4_EXPECT_VLLM_VERSION}" \
             --expect-mtp-sha256 "${DSV4_EXPECT_FLASH_MTP_SHA256}" \
             --require-dynamo; \
     else \

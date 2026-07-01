@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--patch-source", required=True)
     parser.add_argument("--expect-vllm-git-sha", default="")
+    parser.add_argument("--expect-vllm-version", default="")
     parser.add_argument("--expect-mtp-sha256", required=True)
     parser.add_argument("--require-dynamo", action="store_true")
     return parser.parse_args()
@@ -51,7 +52,13 @@ def vllm_root() -> Path:
     return Path(next(iter(spec.submodule_search_locations))).resolve()
 
 
-def check_vllm_git_sha(vllm_version: str, expected_sha: str) -> None:
+def check_vllm_identity(
+    vllm_version: str, expected_sha: str, expected_version: str
+) -> None:
+    expected_version = expected_version.strip()
+    if expected_version and vllm_version == expected_version:
+        return
+
     expected_sha = expected_sha.strip().lower()
     if not expected_sha:
         return
@@ -61,8 +68,10 @@ def check_vllm_git_sha(vllm_version: str, expected_sha: str) -> None:
     if any(candidate and candidate in vllm_version.lower() for candidate in candidates):
         return
     raise RuntimeError(
-        "Installed vLLM version does not contain expected git SHA prefix: "
-        f"version={vllm_version!r}, expected={expected_sha!r}"
+        "Installed vLLM version does not match expected release version "
+        "or contain expected git SHA prefix: "
+        f"version={vllm_version!r}, expected_version={expected_version!r}, "
+        f"expected_sha={expected_sha!r}"
     )
 
 
@@ -102,7 +111,9 @@ def main() -> None:
         )
 
     vllm_version = metadata.version("vllm")
-    check_vllm_git_sha(vllm_version, args.expect_vllm_git_sha)
+    check_vllm_identity(
+        vllm_version, args.expect_vllm_git_sha, args.expect_vllm_version
+    )
 
     dynamo_origin = None
     if args.require_dynamo:
