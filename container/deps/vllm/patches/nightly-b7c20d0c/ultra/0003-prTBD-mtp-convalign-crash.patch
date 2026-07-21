@@ -1,0 +1,230 @@
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index f3f0afb130..7ac11a99b4 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -4270,17 +4270,33 @@ class GPUModelRunner(
+                     deferred_state_corrections_fn()
+                     deferred_state_corrections_fn = None
+                 mamba_bufs = self._get_mamba_bufs()
+-                mamba_utils.preprocess_mamba(
+-                    scheduler_output,
+-                    self.kv_cache_config,
+-                    self.cache_config,
+-                    self.mamba_state_idx,
+-                    self.input_batch,
+-                    self.requests,
+-                    self.compilation_config.static_forward_context,
+-                    self.model.get_mamba_state_copy_func(),
+-                    mamba_bufs.preprocess,
+-                )
++                mamba_state_copy_funcs = self.model.get_mamba_state_copy_func()
++                if mamba_bufs.postprocess_align is not None:
++                    mamba_utils.preprocess_mamba_align_gpu(
++                        scheduler_output=scheduler_output,
++                        kv_cache_config=self.kv_cache_config,
++                        cache_config=self.cache_config,
++                        mamba_state_idx=self.mamba_state_idx,
++                        input_batch=self.input_batch,
++                        requests=self.requests,
++                        forward_context=(
++                            self.compilation_config.static_forward_context
++                        ),
++                        mamba_state_copy_funcs=mamba_state_copy_funcs,
++                        bufs=mamba_bufs,
++                    )
++                else:
++                    mamba_utils.preprocess_mamba(
++                        scheduler_output,
++                        self.kv_cache_config,
++                        self.cache_config,
++                        self.mamba_state_idx,
++                        self.input_batch,
++                        self.requests,
++                        self.compilation_config.static_forward_context,
++                        mamba_state_copy_funcs,
++                        mamba_bufs.preprocess,
++                    )
+                 # preprocess_mamba resets num_accepted_tokens_cpu to 1
+                 # for requests whose state was copied to a new block.
+                 # Re-sync to GPU so the mamba kernel reads from the
+diff --git a/vllm/v1/worker/mamba_utils.py b/vllm/v1/worker/mamba_utils.py
+index 7f611a2eef..85d609d432 100644
+--- a/vllm/v1/worker/mamba_utils.py
++++ b/vllm/v1/worker/mamba_utils.py
+@@ -348,8 +348,9 @@ def precopy_mamba_align_fused_kernel(
+     num_reqs,
+     COPY_BLOCK_SIZE: tl.constexpr,
+     CONV_STATE_DIM_FIRST: tl.constexpr,
++    HAS_IDX_MAPPING: tl.constexpr = True,
+ ):
+-    """Pre-copy mamba "align" state across block boundaries on the V2 runner.
++    """Pre-copy mamba "align" state across block boundaries.
+ 
+     Before the forward pass, copy each request's last SSM/conv state from its
+     previous block column into the new window block column, so the kernels read
+@@ -359,16 +360,20 @@ def precopy_mamba_align_fused_kernel(
+     copy specs), but driven by the GPU-resident src columns so it needs no
+     CPU-GPU sync (async-scheduling safe).
+ 
+-    Grid: (num_reqs, num_layers * num_state_types); block tables are indexed by
+-    batch row, per-request state by req_idx via idx_mapping (V2 layout).
++    Grid: (num_reqs, num_layers * num_state_types). V2 passes a batch-to-state
++    idx_mapping; V1 already stores the staged arrays in batch order and uses
++    HAS_IDX_MAPPING=False.
+     """
+     batch_idx = tl.program_id(0)
+     state_idx = tl.program_id(1)
+     if batch_idx >= num_reqs:
+         return
+-    req_idx = tl.load(idx_mapping_ptr + batch_idx)
+-    if req_idx < 0:
+-        return
++    if HAS_IDX_MAPPING:
++        req_idx = tl.load(idx_mapping_ptr + batch_idx)
++        if req_idx < 0:
++            return
++    else:
++        req_idx = batch_idx
+ 
+     src_col = tl.load(src_col_ptr + req_idx)
+     dst_col = tl.load(mamba_state_idx_ptr + req_idx)
+@@ -527,6 +532,8 @@ class MambaSpecDecodeGPUContext:
+     num_scheduled_tokens_buf: CpuGpuBuffer | None = None
+     num_computed_tokens_buf: CpuGpuBuffer | None = None
+     num_draft_tokens_buf: CpuGpuBuffer | None = None
++    precopy_src_col_buf: CpuGpuBuffer | None = None
++    precopy_token_bias_buf: CpuGpuBuffer | None = None
+ 
+     # Flag to track if metadata has been populated
+     is_initialized: bool = False
+@@ -590,6 +597,8 @@ class MambaSpecDecodeGPUContext:
+             num_scheduled_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             num_computed_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             num_draft_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
++            precopy_src_col_buf=make_buffer(max_num_reqs, dtype=torch.int32),
++            precopy_token_bias_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             is_initialized=False,
+         )
+ 
+@@ -797,17 +806,18 @@ class MambaSpecDecodeGPUContext:
+         state_idx_gpu: torch.Tensor,
+         src_col_gpu: torch.Tensor,
+         token_bias_gpu: torch.Tensor,
+-        idx_mapping: torch.Tensor,
++        idx_mapping: torch.Tensor | None,
+     ) -> None:
+         """Pre-copy each request's previous running block into its new window
+-        block before the forward pass (V2 align boundary migration).
++        block before the forward pass (align boundary migration).
+ 
+         Args:
+             num_reqs: Number of active requests (batch order).
+             state_idx_gpu: [max_reqs] post-advance dst block column per req slot.
+             src_col_gpu: [max_reqs] pre-advance src block column (-1 = fresh).
+             token_bias_gpu: [max_reqs] accepted-token bias (num_accepted - 1).
+-            idx_mapping: [num_reqs] batch_idx -> req_state_idx (-1 to skip).
++            idx_mapping: optional [num_reqs] batch_idx -> req_state_idx.
++                None means V1 batch order already equals request state order.
+         """
+         if num_reqs == 0 or not self.is_initialized:
+             return
+@@ -831,6 +841,7 @@ class MambaSpecDecodeGPUContext:
+             num_reqs,
+             COPY_BLOCK_SIZE=1024,
+             CONV_STATE_DIM_FIRST=is_conv_state_dim_first(),
++            HAS_IDX_MAPPING=idx_mapping is not None,
+         )
+ 
+     def run_fused_postprocess_align(
+@@ -1055,6 +1066,91 @@ def preprocess_mamba(
+     do_mamba_copy_block(copy_bufs)
+ 
+ 
++def preprocess_mamba_align_gpu(
++    *,
++    scheduler_output: SchedulerOutput,
++    kv_cache_config: KVCacheConfig,
++    cache_config: CacheConfig,
++    mamba_state_idx: dict[str, int],
++    input_batch: GPUInputBatch,
++    requests: dict[str, CachedRequestState],
++    forward_context: dict[str, Any],
++    mamba_state_copy_funcs: tuple[MambaStateCopyFunc, ...],
++    bufs: MambaBuffers,
++) -> None:
++    """GPU-side V1 align preprocess for spec-decode hybrid Mamba.
++
++    This mirrors ``preprocess_mamba``'s state-index bookkeeping, but routes the
++    actual block migration through the fused row-aware copy kernel. That is
++    required for DS conv layout when the previous step accepted a draft token:
++    the conv tail slice is non-contiguous and cannot be represented as one CPU
++    ``batch_memcpy`` entry.
++    """
++    ctx = bufs.postprocess_align
++    assert ctx is not None
++    assert ctx.mamba_state_idx_buf is not None
++    assert ctx.precopy_src_col_buf is not None
++    assert ctx.precopy_token_bias_buf is not None
++    assert cache_config.enable_prefix_caching
++
++    num_reqs = len(input_batch.req_ids)
++    if num_reqs == 0:
++        return
++
++    if not ctx.is_initialized:
++        ctx.initialize_from_forward_context(
++            kv_cache_config,
++            forward_context,
++            mamba_state_copy_funcs,
++            [
++                input_batch.block_table[gid].get_device_tensor(num_reqs)
++                for gid in ctx.mamba_group_ids
++            ],
++        )
++
++    mamba_spec = bufs.preprocess.mamba_spec
++    block_size = mamba_spec.block_size
++    num_speculative_blocks = mamba_spec.num_speculative_blocks
++    cleanup_mamba_state_idx(scheduler_output, mamba_state_idx)
++
++    state_idx_np = ctx.mamba_state_idx_buf.np
++    src_col_np = ctx.precopy_src_col_buf.np
++    token_bias_np = ctx.precopy_token_bias_buf.np
++    src_col_np[:num_reqs] = -1
++    token_bias_np[:num_reqs] = 0
++
++    for i, req_id in enumerate(input_batch.req_ids):
++        req_state = requests[req_id]
++        prev_state_idx = mamba_state_idx.get(req_id)
++        if prev_state_idx is None:
++            prev_state_idx = (req_state.num_computed_tokens - 1) // block_size
++
++        num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
++        num_blocks = (
++            cdiv(req_state.num_computed_tokens + num_scheduled_tokens, block_size)
++            + num_speculative_blocks
++        )
++        curr_state_idx = num_blocks - 1 - num_speculative_blocks
++        mamba_state_idx[req_id] = curr_state_idx
++        state_idx_np[i] = curr_state_idx
++
++        if prev_state_idx != -1 and prev_state_idx != curr_state_idx:
++            src_col_np[i] = prev_state_idx
++            token_bias_np[i] = max(int(input_batch.num_accepted_tokens_cpu[i]) - 1, 0)
++            input_batch.num_accepted_tokens_cpu[i] = 1
++
++    ctx.mamba_state_idx_buf.copy_to_gpu(num_reqs)
++    ctx.precopy_src_col_buf.copy_to_gpu(num_reqs)
++    ctx.precopy_token_bias_buf.copy_to_gpu(num_reqs)
++    ctx.run_fused_precopy(
++        num_reqs=num_reqs,
++        state_idx_gpu=ctx.mamba_state_idx_buf.gpu,
++        src_col_gpu=ctx.precopy_src_col_buf.gpu,
++        token_bias_gpu=ctx.precopy_token_bias_buf.gpu,
++        idx_mapping=None,
++    )
++
++
+ def postprocess_mamba_all(
+     scheduler_output: SchedulerOutput,
+     kv_cache_config: KVCacheConfig,

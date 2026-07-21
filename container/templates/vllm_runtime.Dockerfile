@@ -204,6 +204,26 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
         "modelexpress==${MODELEXPRESS_VERSION}"
 {% endif %}
 
+{% if cuda_version == "13.0" %}
+# Nemotron Ultra nightly PR-B patch stack. Patches are vendored as upstream
+# vLLM diffs and applied to the installed site-packages tree, matching the
+# container pattern introduced by Dynamo PR #10234.
+RUN --mount=type=bind,source=./container/deps/vllm/patches/nightly-b7c20d0c/ultra,target=/tmp/nemotron-ultra-vllm-patches,readonly \
+    --mount=type=bind,source=./container/deps/vllm/validate_nemotron_ultra_runtime.py,target=/tmp/validate_nemotron_ultra_runtime.py,readonly \
+    set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch; \
+    site_parent="$(python3 -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)')"; \
+    for patch_file in /tmp/nemotron-ultra-vllm-patches/*.patch; do \
+        echo "Applying ${patch_file}"; \
+        patch --batch --forward -p1 -d "${site_parent}" < "${patch_file}"; \
+    done; \
+    apt-get purge -y patch; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 /tmp/validate_nemotron_ultra_runtime.py
+
+{% endif %}
+
 {% endif %}
 
 {% if device == "cuda" %}
