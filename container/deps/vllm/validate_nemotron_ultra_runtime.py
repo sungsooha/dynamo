@@ -14,7 +14,8 @@ import vllm
 
 MARKER_GROUPS = {
     "prB_mtp_convalign_precopy": [
-        "preprocess_mamba_align_gpu",
+        "_FusedPrecopy",
+        "_resolve_fused_precopy",
         "run_fused_precopy",
         "precopy_src_col_buf",
         "HAS_IDX_MAPPING",

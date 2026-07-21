@@ -1,0 +1,645 @@
+diff --git a/tests/kernels/mamba/test_precopy_mamba_align.py b/tests/kernels/mamba/test_precopy_mamba_align.py
+index be1e455948..ef855ae099 100644
+--- a/tests/kernels/mamba/test_precopy_mamba_align.py
++++ b/tests/kernels/mamba/test_precopy_mamba_align.py
+@@ -2,9 +2,9 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Equivalence test for ``precopy_mamba_align_fused_kernel``.
+ 
+-The V2 "align" pre-copy must migrate mamba state across block boundaries with
+-byte-identical semantics to the V1 copy specs (``get_conv_copy_spec`` /
+-``get_temporal_copy_spec``):
++The fused "align" pre-copy must migrate mamba state across block boundaries
++with byte-identical semantics to the scalar V1 copy specs
++(``get_conv_copy_spec`` / ``get_temporal_copy_spec``):
+ 
+ * conv state (SD layout, conv_width > 0): shift the sliding window by
+   ``token_bias`` tokens -- ``state[bt[src_col], token_bias:]`` ->
+@@ -14,20 +14,27 @@ byte-identical semantics to the V1 copy specs (``get_conv_copy_spec`` /
+   ``state[bt[dst_col]]``.
+ 
+ The kernel must also no-op when ``src_col < 0`` (fresh request) or
+-``src_col == dst_col`` (no boundary crossed).
++``src_col == dst_col`` (no boundary crossed). V2 callers pass an explicit
++``idx_mapping``; V1 align preprocessing launches in batch order with
++``idx_mapping=None``.
+ """
+ 
+ from __future__ import annotations
+ 
++from types import SimpleNamespace
++
++import numpy as np
+ import torch
+ 
++from vllm.model_executor.layers.mamba import mamba_utils as layer_mamba_utils
+ from vllm.platforms import current_platform
++from vllm.v1.worker import mamba_utils as worker_mamba_utils
+ from vllm.v1.worker.mamba_utils import precopy_mamba_align_fused_kernel
+ 
+ try:
+     import pytest
+ 
+-    pytestmark = pytest.mark.skipif(
++    _cuda_required = pytest.mark.skipif(
+         not current_platform.is_cuda(),
+         reason="precopy_mamba_align_fused_kernel needs CUDA/Triton",
+     )
+@@ -35,6 +42,9 @@ try:
+ except ModuleNotFoundError:  # allow running directly as ``python <thisfile>``
+     pytest = None
+ 
++    def _cuda_required(fn):
++        return fn
++
+     def _parametrize(_name, _values):
+         def _deco(fn):
+             return fn
+@@ -49,13 +59,20 @@ SSM_SHAPE = (4, 16, 16)
+ MAX_COLS = 8
+ 
+ 
+-def _build_state(num_blocks, device):
++def _build_state(num_blocks, device, conv_state_dim_first):
+     """Per-layer (conv SD [nb, width, dim] bf16, ssm [nb, *shape] fp32) pools."""
+     convs, ssms = [], []
+     for _ in range(NUM_LAYERS):
++        conv_shape = (
++            (num_blocks, CONV_DIM, CONV_WIDTH)
++            if conv_state_dim_first
++            else (num_blocks, CONV_WIDTH, CONV_DIM)
++        )
+         convs.append(
+             torch.randn(
+-                num_blocks, CONV_WIDTH, CONV_DIM, dtype=torch.bfloat16, device=device
++                *conv_shape,
++                dtype=torch.bfloat16,
++                device=device,
+             )
+         )
+         ssms.append(
+@@ -64,7 +81,7 @@ def _build_state(num_blocks, device):
+     return convs, ssms
+ 
+ 
+-def _build_meta(convs, ssms, device):
++def _build_meta(convs, ssms, device, conv_state_dim_first):
+     """Flattened per-(layer, state-type) metadata, ordered conv, ssm per layer."""
+     n = NUM_LAYERS * 2
+     base = torch.zeros(n, dtype=torch.int64, device=device)
+@@ -82,8 +99,14 @@ def _build_meta(convs, ssms, device):
+         base[i] = conv.data_ptr()
+         blk_stride[i] = conv.stride(0) * conv.element_size()
+         elem[i] = conv.element_size()
+-        width[i] = conv.size(1)
+-        inner[i] = conv.stride(1)
++        if conv_state_dim_first:
++            width[i] = conv.size(2)
++            inner[i] = 1
++            drc[i] = conv.size(1)
++            drs[i] = conv.stride(1) * conv.element_size()
++        else:
++            width[i] = conv.size(1)
++            inner[i] = conv.stride(1)
+         i += 1
+         # ssm (temporal): width = 0, inner = elems per block
+         base[i] = ssm.data_ptr()
+@@ -95,7 +118,7 @@ def _build_meta(convs, ssms, device):
+     return base, blk_stride, elem, inner, width, group, drc, drs
+ 
+ 
+-def _reference(convs, ssms, bt, src_col, dst_col, bias, num_reqs):
++def _reference(convs, ssms, bt, src_col, dst_col, bias, num_reqs, conv_dim_first):
+     """Apply the V1 copy semantics on clones, reading from the pre-copy state."""
+     conv_pre = [c.clone() for c in convs]
+     ssm_pre = [s.clone() for s in ssms]
+@@ -108,14 +131,24 @@ def _reference(convs, ssms, bt, src_col, dst_col, bias, num_reqs):
+         sblk, dblk = int(bt[r, sc]), int(bt[r, dc])
+         tblk = int(bt[r, sc + tb])  # temporal src column shifted by bias
+         for layer in range(NUM_LAYERS):
+-            conv_ref[layer][dblk, : CONV_WIDTH - tb] = conv_pre[layer][sblk, tb:]
++            if conv_dim_first:
++                conv_ref[layer][dblk, :, : CONV_WIDTH - tb] = conv_pre[layer][
++                    sblk, :, tb:
++                ]
++            else:
++                conv_ref[layer][dblk, : CONV_WIDTH - tb] = conv_pre[layer][sblk, tb:]
+             ssm_ref[layer][dblk] = ssm_pre[layer][tblk]
+     return conv_ref, ssm_ref
+ 
+ 
++@_parametrize("conv_state_dim_first", [False, True])
+ @_parametrize("num_reqs", [1, 4, 16])
+ @_parametrize("token_bias", [0, 1, 2])
+-def test_precopy_matches_v1_copy_specs(num_reqs, token_bias):
++@_parametrize("has_idx_mapping", [True, False])
++@_cuda_required
++def test_precopy_matches_v1_copy_specs(
++    num_reqs, token_bias, has_idx_mapping, conv_state_dim_first
++):
+     device = torch.device("cuda")
+     torch.manual_seed(0)
+     # Distinct physical block per (req, col) so copies never alias.
+@@ -136,13 +169,20 @@ def test_precopy_matches_v1_copy_specs(num_reqs, token_bias):
+     if num_reqs >= 2:
+         dst_col[1] = 1  # src_col == dst_col -> no copy
+ 
+-    convs, ssms = _build_state(num_blocks, device)
++    convs, ssms = _build_state(num_blocks, device, conv_state_dim_first)
+     conv_ref, ssm_ref = _reference(
+-        convs, ssms, bt.cpu(), src_col.cpu(), dst_col.cpu(), bias.cpu(), num_reqs
++        convs,
++        ssms,
++        bt.cpu(),
++        src_col.cpu(),
++        dst_col.cpu(),
++        bias.cpu(),
++        num_reqs,
++        conv_state_dim_first,
+     )
+ 
+     base, blk_stride, elem, inner, width, group, drc, drs = _build_meta(
+-        convs, ssms, device
++        convs, ssms, device, conv_state_dim_first
+     )
+     bt_ptrs = torch.tensor([bt.data_ptr()], dtype=torch.int64, device=device)
+     idx_mapping = torch.arange(num_reqs, dtype=torch.int32, device=device)
+@@ -161,10 +201,11 @@ def test_precopy_matches_v1_copy_specs(num_reqs, token_bias):
+         group,
+         drc,
+         drs,
+-        idx_mapping,
++        idx_mapping if has_idx_mapping else None,
+         num_reqs,
+         COPY_BLOCK_SIZE=1024,
+-        CONV_STATE_DIM_FIRST=False,
++        CONV_STATE_DIM_FIRST=conv_state_dim_first,
++        HAS_IDX_MAPPING=has_idx_mapping,
+     )
+     torch.accelerator.synchronize()
+ 
+@@ -173,8 +214,204 @@ def test_precopy_matches_v1_copy_specs(num_reqs, token_bias):
+         torch.testing.assert_close(ssms[layer], ssm_ref[layer], rtol=0, atol=0)
+ 
+ 
++def test_ds_conv_copy_spec_reproduces_multi_accept_assert(monkeypatch):
++    monkeypatch.setattr(
++        layer_mamba_utils,
++        "is_conv_state_dim_first",
++        lambda: True,
++    )
++    state = torch.empty((2, CONV_DIM, CONV_WIDTH), dtype=torch.bfloat16)
++
++    with pytest.raises(AssertionError, match="num_accepted_tokens > 1"):
++        layer_mamba_utils.get_conv_copy_spec(
++            state=state,
++            block_ids=[0, 1],
++            cur_block_idx=0,
++            num_accepted_tokens=3,
++        )
++
++
++class _FakeCpuGpuBuffer:
++    def __init__(self, n):
++        self.np = np.zeros(n, dtype=np.int32)
++        self.gpu = object()
++        self.copy_sizes = []
++
++    def copy_to_gpu(self, n=None):
++        self.copy_sizes.append(n)
++        return self.gpu
++
++
++class _FakePrecopyContext:
++    def __init__(self, n):
++        self.is_initialized = True
++        self.mamba_group_ids = [0]
++        self.mamba_state_idx_buf = _FakeCpuGpuBuffer(n)
++        self.precopy_src_col_buf = _FakeCpuGpuBuffer(n)
++        self.precopy_token_bias_buf = _FakeCpuGpuBuffer(n)
++        self.calls = []
++
++    def initialize_from_forward_context(self, *args, **kwargs):
++        raise AssertionError("test context is pre-initialized")
++
++    def run_fused_precopy(
++        self,
++        *,
++        num_reqs,
++        state_idx_gpu,
++        src_col_gpu,
++        token_bias_gpu,
++        idx_mapping,
++    ):
++        self.calls.append(
++            {
++                "num_reqs": num_reqs,
++                "state_idx": self.mamba_state_idx_buf.np[:num_reqs].copy(),
++                "src_col": self.precopy_src_col_buf.np[:num_reqs].copy(),
++                "token_bias": self.precopy_token_bias_buf.np[:num_reqs].copy(),
++                "idx_mapping": idx_mapping,
++            }
++        )
++
++
++def _make_preprocess_case(token_bias):
++    req_ids = ["fresh", "same", "cross_a", "cross_b"]
++    scheduler_output = SimpleNamespace(
++        finished_req_ids=set(),
++        preempted_req_ids=set(),
++        scheduled_cached_reqs=SimpleNamespace(resumed_req_ids=set()),
++        num_scheduled_tokens={
++            "fresh": 1,
++            "same": 1,
++            "cross_a": 1,
++            "cross_b": 2,
++        },
++    )
++    input_batch = SimpleNamespace(
++        req_ids=req_ids,
++        num_accepted_tokens_cpu=np.array(
++            [token_bias + 1, token_bias + 1, token_bias + 1, 2],
++            dtype=np.int32,
++        ),
++    )
++    requests = {
++        "fresh": SimpleNamespace(req_id="fresh", num_computed_tokens=0),
++        "same": SimpleNamespace(req_id="same", num_computed_tokens=5),
++        "cross_a": SimpleNamespace(req_id="cross_a", num_computed_tokens=8),
++        "cross_b": SimpleNamespace(req_id="cross_b", num_computed_tokens=7),
++    }
++    mamba_state_idx = {"same": 1, "cross_a": 0, "cross_b": 1}
++    return scheduler_output, input_batch, requests, mamba_state_idx
++
++
++@_parametrize("token_bias", [1, 2])
++def test_preprocess_fused_align_matches_scalar_bookkeeping(monkeypatch, token_bias):
++    block_size = 4
++    mamba_spec = SimpleNamespace(block_size=block_size, num_speculative_blocks=1)
++    cache_config = SimpleNamespace(enable_prefix_caching=True)
++    kv_cache_config = SimpleNamespace()
++    scalar_copy_calls = []
++
++    def fake_collect(
++        copy_bufs,
++        kv_cache_config,
++        mamba_state_copy_funcs,
++        mamba_group_ids,
++        src_block_idx,
++        dest_block_idx,
++        accept_token_bias,
++        req_state,
++        forward_context,
++    ):
++        scalar_copy_calls.append(
++            (
++                req_state.req_id,
++                src_block_idx,
++                dest_block_idx,
++                accept_token_bias,
++            )
++        )
++
++    monkeypatch.setattr(worker_mamba_utils, "collect_mamba_copy_meta", fake_collect)
++    monkeypatch.setattr(
++        worker_mamba_utils, "do_mamba_copy_block", lambda copy_bufs: None
++    )
++
++    scalar_case = _make_preprocess_case(token_bias)
++    fused_case = _make_preprocess_case(token_bias)
++
++    scalar_copy_bufs = SimpleNamespace(
++        mamba_group_ids=[0],
++        mamba_spec=mamba_spec,
++        offset=0,
++    )
++    worker_mamba_utils.preprocess_mamba(
++        scheduler_output=scalar_case[0],
++        kv_cache_config=kv_cache_config,
++        cache_config=cache_config,
++        mamba_state_idx=scalar_case[3],
++        input_batch=scalar_case[1],
++        requests=scalar_case[2],
++        forward_context={},
++        mamba_state_copy_funcs=(),
++        copy_bufs=scalar_copy_bufs,
++    )
++
++    ctx = _FakePrecopyContext(len(fused_case[1].req_ids))
++    fused_copy_bufs = SimpleNamespace(
++        mamba_group_ids=[0],
++        mamba_spec=mamba_spec,
++        offset=0,
++    )
++    worker_mamba_utils.preprocess_mamba(
++        scheduler_output=fused_case[0],
++        kv_cache_config=kv_cache_config,
++        cache_config=cache_config,
++        mamba_state_idx=fused_case[3],
++        input_batch=fused_case[1],
++        requests=fused_case[2],
++        forward_context={},
++        mamba_state_copy_funcs=(),
++        copy_bufs=fused_copy_bufs,
++        align_ctx=ctx,
++    )
++
++    assert fused_case[3] == scalar_case[3]
++    np.testing.assert_array_equal(
++        fused_case[1].num_accepted_tokens_cpu,
++        scalar_case[1].num_accepted_tokens_cpu,
++    )
++    assert scalar_copy_calls == [
++        ("cross_a", 0, 2, token_bias),
++        ("cross_b", 1, 2, 1),
++    ]
++    assert len(ctx.calls) == 1
++    call = ctx.calls[0]
++    assert call["num_reqs"] == len(fused_case[1].req_ids)
++    assert call["idx_mapping"] is None
++    np.testing.assert_array_equal(call["state_idx"], np.array([0, 1, 2, 2]))
++    np.testing.assert_array_equal(call["src_col"], np.array([-1, -1, 0, 1]))
++    np.testing.assert_array_equal(call["token_bias"], np.array([0, 0, token_bias, 1]))
++    fused_copy_calls = [
++        (req_id, int(src), int(dst), int(bias))
++        for req_id, src, dst, bias in zip(
++            fused_case[1].req_ids,
++            call["src_col"],
++            call["state_idx"],
++            call["token_bias"],
++        )
++        if int(src) != -1 and int(src) != int(dst)
++    ]
++    assert fused_copy_calls == scalar_copy_calls
++
++
+ if __name__ == "__main__":
+     for nr in (1, 4, 16):
+         for tb in (0, 1, 2):
+-            test_precopy_matches_v1_copy_specs(nr, tb)
+-            print(f"OK num_reqs={nr} token_bias={tb}")
++            for mapping in (True, False):
++                for dim_first in (False, True):
++                    test_precopy_matches_v1_copy_specs(nr, tb, mapping, dim_first)
++                    print(
++                        f"OK num_reqs={nr} token_bias={tb} "
++                        f"has_idx_mapping={mapping} conv_dim_first={dim_first}"
++                    )
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index f3f0afb130..4f69e4aa82 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -4280,6 +4280,7 @@ class GPUModelRunner(
+                     self.compilation_config.static_forward_context,
+                     self.model.get_mamba_state_copy_func(),
+                     mamba_bufs.preprocess,
++                    align_ctx=mamba_bufs.postprocess_align,
+                 )
+                 # preprocess_mamba resets num_accepted_tokens_cpu to 1
+                 # for requests whose state was copied to a new block.
+diff --git a/vllm/v1/worker/mamba_utils.py b/vllm/v1/worker/mamba_utils.py
+index 7f611a2eef..c07f056c68 100644
+--- a/vllm/v1/worker/mamba_utils.py
++++ b/vllm/v1/worker/mamba_utils.py
+@@ -3,7 +3,7 @@
+ import dataclasses
+ import itertools
+ from collections.abc import Callable
+-from typing import Any
++from typing import Any, NamedTuple
+ 
+ import torch
+ 
+@@ -348,8 +348,9 @@ def precopy_mamba_align_fused_kernel(
+     num_reqs,
+     COPY_BLOCK_SIZE: tl.constexpr,
+     CONV_STATE_DIM_FIRST: tl.constexpr,
++    HAS_IDX_MAPPING: tl.constexpr = True,
+ ):
+-    """Pre-copy mamba "align" state across block boundaries on the V2 runner.
++    """Pre-copy mamba "align" state across block boundaries.
+ 
+     Before the forward pass, copy each request's last SSM/conv state from its
+     previous block column into the new window block column, so the kernels read
+@@ -359,16 +360,20 @@ def precopy_mamba_align_fused_kernel(
+     copy specs), but driven by the GPU-resident src columns so it needs no
+     CPU-GPU sync (async-scheduling safe).
+ 
+-    Grid: (num_reqs, num_layers * num_state_types); block tables are indexed by
+-    batch row, per-request state by req_idx via idx_mapping (V2 layout).
++    Grid: (num_reqs, num_layers * num_state_types). V2 passes a batch-to-state
++    idx_mapping; V1 already stores the staged arrays in batch order and uses
++    HAS_IDX_MAPPING=False.
+     """
+     batch_idx = tl.program_id(0)
+     state_idx = tl.program_id(1)
+     if batch_idx >= num_reqs:
+         return
+-    req_idx = tl.load(idx_mapping_ptr + batch_idx)
+-    if req_idx < 0:
+-        return
++    if HAS_IDX_MAPPING:
++        req_idx = tl.load(idx_mapping_ptr + batch_idx)
++        if req_idx < 0:
++            return
++    else:
++        req_idx = batch_idx
+ 
+     src_col = tl.load(src_col_ptr + req_idx)
+     dst_col = tl.load(mamba_state_idx_ptr + req_idx)
+@@ -527,6 +532,8 @@ class MambaSpecDecodeGPUContext:
+     num_scheduled_tokens_buf: CpuGpuBuffer | None = None
+     num_computed_tokens_buf: CpuGpuBuffer | None = None
+     num_draft_tokens_buf: CpuGpuBuffer | None = None
++    precopy_src_col_buf: CpuGpuBuffer | None = None
++    precopy_token_bias_buf: CpuGpuBuffer | None = None
+ 
+     # Flag to track if metadata has been populated
+     is_initialized: bool = False
+@@ -590,6 +597,8 @@ class MambaSpecDecodeGPUContext:
+             num_scheduled_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             num_computed_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             num_draft_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
++            precopy_src_col_buf=make_buffer(max_num_reqs, dtype=torch.int32),
++            precopy_token_bias_buf=make_buffer(max_num_reqs, dtype=torch.int32),
+             is_initialized=False,
+         )
+ 
+@@ -797,17 +806,18 @@ class MambaSpecDecodeGPUContext:
+         state_idx_gpu: torch.Tensor,
+         src_col_gpu: torch.Tensor,
+         token_bias_gpu: torch.Tensor,
+-        idx_mapping: torch.Tensor,
++        idx_mapping: torch.Tensor | None,
+     ) -> None:
+         """Pre-copy each request's previous running block into its new window
+-        block before the forward pass (V2 align boundary migration).
++        block before the forward pass (align boundary migration).
+ 
+         Args:
+             num_reqs: Number of active requests (batch order).
+             state_idx_gpu: [max_reqs] post-advance dst block column per req slot.
+             src_col_gpu: [max_reqs] pre-advance src block column (-1 = fresh).
+             token_bias_gpu: [max_reqs] accepted-token bias (num_accepted - 1).
+-            idx_mapping: [num_reqs] batch_idx -> req_state_idx (-1 to skip).
++            idx_mapping: optional [num_reqs] batch_idx -> req_state_idx.
++                None means V1 batch order already equals request state order.
+         """
+         if num_reqs == 0 or not self.is_initialized:
+             return
+@@ -831,6 +841,7 @@ class MambaSpecDecodeGPUContext:
+             num_reqs,
+             COPY_BLOCK_SIZE=1024,
+             CONV_STATE_DIM_FIRST=is_conv_state_dim_first(),
++            HAS_IDX_MAPPING=idx_mapping is not None,
+         )
+ 
+     def run_fused_postprocess_align(
+@@ -989,6 +1000,36 @@ def cleanup_mamba_state_idx(
+         mamba_state_idx.pop(req_id, None)
+ 
+ 
++class _FusedPrecopy(NamedTuple):
++    """Resolved fused align pre-copy resources (all non-None once resolved)."""
++
++    ctx: "MambaSpecDecodeGPUContext"
++    state_idx: CpuGpuBuffer
++    src_col: CpuGpuBuffer
++    token_bias: CpuGpuBuffer
++
++
++def _resolve_fused_precopy(
++    align_ctx: "MambaSpecDecodeGPUContext | None",
++) -> _FusedPrecopy | None:
++    """Bundle the fused-path buffers, or None for the scalar path.
++
++    Returning one non-None bundle lets callers narrow all four members with a
++    single ``is not None`` check instead of re-asserting each buffer per use.
++    """
++    if align_ctx is None:
++        return None
++    assert align_ctx.mamba_state_idx_buf is not None
++    assert align_ctx.precopy_src_col_buf is not None
++    assert align_ctx.precopy_token_bias_buf is not None
++    return _FusedPrecopy(
++        align_ctx,
++        align_ctx.mamba_state_idx_buf,
++        align_ctx.precopy_src_col_buf,
++        align_ctx.precopy_token_bias_buf,
++    )
++
++
+ def preprocess_mamba(
+     scheduler_output: SchedulerOutput,
+     kv_cache_config: KVCacheConfig,
+@@ -999,11 +1040,13 @@ def preprocess_mamba(
+     forward_context: dict[str, Any],
+     mamba_state_copy_funcs: tuple[MambaStateCopyFunc, ...],
+     copy_bufs: MambaCopyBuffers,
++    align_ctx: MambaSpecDecodeGPUContext | None = None,
+ ):
+     """
+     Copy the mamba state of previous step to the last
+     (1 + num_speculative_blocks) block.
+     """
++    fused = _resolve_fused_precopy(align_ctx)
+     mamba_group_ids = copy_bufs.mamba_group_ids
+     mamba_spec = copy_bufs.mamba_spec
+     num_speculative_blocks = mamba_spec.num_speculative_blocks
+@@ -1013,20 +1056,37 @@ def preprocess_mamba(
+     cleanup_mamba_state_idx(scheduler_output, mamba_state_idx)
+ 
+     copy_bufs.offset = 0
++    num_reqs = len(input_batch.req_ids)
++
++    if fused is not None:
++        if num_reqs == 0:
++            return
++        if not fused.ctx.is_initialized:
++            fused.ctx.initialize_from_forward_context(
++                kv_cache_config,
++                forward_context,
++                mamba_state_copy_funcs,
++                [
++                    input_batch.block_table[gid].get_device_tensor(num_reqs)
++                    for gid in fused.ctx.mamba_group_ids
++                ],
++            )
++
++        fused.src_col.np[:num_reqs] = -1
++        fused.token_bias.np[:num_reqs] = 0
++
+     for i, req_id in enumerate(input_batch.req_ids):
+         req_state = requests[req_id]
+         prev_state_idx = mamba_state_idx.get(req_id)
+         if prev_state_idx is None:
+-            # new / resumed request, no previous state
+-            # if num_computed_tokens is 0, prev_state_idx will be -1
++            # New / resumed request; num_computed_tokens == 0 gives -1.
+             prev_state_idx = (req_state.num_computed_tokens - 1) // block_size
+ 
+         num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
+-        num_blocks: int = (
++        num_blocks = (
+             cdiv(req_state.num_computed_tokens + num_scheduled_tokens, block_size)
+             + num_speculative_blocks
+         )
+-
+         # We always save the current running state at the last
+         # (1 + num_speculative_blocks) block.
+         # A corner case worth mention here: assume we have block_size = 4 and
+@@ -1039,20 +1099,42 @@ def preprocess_mamba(
+         # And use block 1 to save the running state.
+         curr_state_idx = num_blocks - 1 - num_speculative_blocks
+         mamba_state_idx[req_id] = curr_state_idx
++        if fused is not None:
++            fused.state_idx.np[i] = curr_state_idx
++
+         if prev_state_idx != -1 and prev_state_idx != curr_state_idx:
+-            collect_mamba_copy_meta(
+-                copy_bufs,
+-                kv_cache_config,
+-                mamba_state_copy_funcs,
+-                mamba_group_ids,
+-                prev_state_idx,
+-                curr_state_idx,
+-                input_batch.num_accepted_tokens_cpu[i] - 1,
+-                req_state,
+-                forward_context,
+-            )
++            accept_token_bias = int(input_batch.num_accepted_tokens_cpu[i]) - 1
++            if fused is not None:
++                assert accept_token_bias >= 0
++                fused.src_col.np[i] = prev_state_idx
++                fused.token_bias.np[i] = accept_token_bias
++            else:
++                collect_mamba_copy_meta(
++                    copy_bufs,
++                    kv_cache_config,
++                    mamba_state_copy_funcs,
++                    mamba_group_ids,
++                    prev_state_idx,
++                    curr_state_idx,
++                    accept_token_bias,
++                    req_state,
++                    forward_context,
++                )
+             input_batch.num_accepted_tokens_cpu[i] = 1
+-    do_mamba_copy_block(copy_bufs)
++
++    if fused is not None:
++        fused.state_idx.copy_to_gpu(num_reqs)
++        fused.src_col.copy_to_gpu(num_reqs)
++        fused.token_bias.copy_to_gpu(num_reqs)
++        fused.ctx.run_fused_precopy(
++            num_reqs=num_reqs,
++            state_idx_gpu=fused.state_idx.gpu,
++            src_col_gpu=fused.src_col.gpu,
++            token_bias_gpu=fused.token_bias.gpu,
++            idx_mapping=None,
++        )
++    else:
++        do_mamba_copy_block(copy_bufs)
+ 
+ 
+ def postprocess_mamba_all(
