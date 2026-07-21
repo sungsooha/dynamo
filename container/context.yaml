@@ -59,13 +59,9 @@ dynamo:
 vllm:
   cuda13.0:
     base_image: nvcr.io/nvidia/cuda-dl-base
-    # Nemotron Ultra nightly PR-B validation uses the S0 image as the pinned
-    # b7c20d0c vLLM runtime base. There is no public vllm/vllm-openai tag for
-    # this July SHA; S0 installs the exact b7c20d0c Python sources with the
-    # matching cu130 precompiled wheel on the Ubuntu 24.04 dependency image.
-    runtime_image: nvcr.io/nvstaging/nim/sungsooh
+    runtime_image: vllm/vllm-openai
     base_image_tag: 25.11-cuda13.0-devel-ubuntu24.04
-    runtime_image_tag: s0-base-b7c20d0c-ee1d3b3@sha256:c441815310628a429b9d02306ed12c37ff66133f15318ee2f210d74b42657b34
+    runtime_image_tag: v0.25.1-ubuntu2404
     # Baseline is vllm-openai's TRUE base, nvidia/cuda:13.0.2-base-ubuntu24.04
     # (Docker Hub), NOT a self-baseline of the third-party vllm/vllm-openai image.
     # vllm-openai is built FROM nvidia/cuda, so this attributes everything vLLM

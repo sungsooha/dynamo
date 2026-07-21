@@ -210,7 +210,12 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # container pattern introduced by Dynamo PR #10234.
 RUN --mount=type=bind,source=./container/deps/vllm/patches/nightly-b7c20d0c/ultra,target=/tmp/nemotron-ultra-vllm-patches,readonly \
     --mount=type=bind,source=./container/deps/vllm/validate_nemotron_ultra_runtime.py,target=/tmp/validate_nemotron_ultra_runtime.py,readonly \
+    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
+    export UV_CACHE_DIR=/root/.cache/uv; \
+    uv pip install --system --no-deps --force-reinstall \
+        "https://wheels.vllm.ai/b7c20d0cfa822c011e8d24ce63a2e09bb1cef431/vllm-0.23.1rc1.dev1310%2Bgb7c20d0cf-cp38-abi3-manylinux_2_28_x86_64.whl"; \
+    rm -rf /workspace/vllm; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch; \
     site_parent="$(python3 -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)')"; \
