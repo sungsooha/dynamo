@@ -210,6 +210,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # container pattern introduced by Dynamo PR #10234.
 RUN --mount=type=bind,source=./container/deps/vllm/patches/nightly-b7c20d0c/ultra,target=/tmp/nemotron-ultra-vllm-patches,readonly \
     --mount=type=bind,source=./container/deps/vllm/validate_nemotron_ultra_runtime.py,target=/tmp/validate_nemotron_ultra_runtime.py,readonly \
+    --mount=type=bind,source=./container/deps/vllm/filter_runtime_patch.py,target=/tmp/filter_runtime_patch.py,readonly \
     --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     export UV_CACHE_DIR=/root/.cache/uv; \
@@ -221,7 +222,10 @@ RUN --mount=type=bind,source=./container/deps/vllm/patches/nightly-b7c20d0c/ultr
     site_parent="$(python3 -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)')"; \
     for patch_file in /tmp/nemotron-ultra-vllm-patches/*.patch; do \
         echo "Applying ${patch_file}"; \
-        patch --batch --forward -p1 -d "${site_parent}" < "${patch_file}"; \
+        runtime_patch="$(mktemp)"; \
+        python3 /tmp/filter_runtime_patch.py "${patch_file}" > "${runtime_patch}"; \
+        patch --batch --forward -p1 -d "${site_parent}" < "${runtime_patch}"; \
+        rm -f "${runtime_patch}"; \
     done; \
     apt-get purge -y patch; \
     rm -rf /var/lib/apt/lists/*; \
