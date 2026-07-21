@@ -1,0 +1,329 @@
+diff --git a/tests/v1/kv_connector/unit/offloading_connector/test_worker.py b/tests/v1/kv_connector/unit/offloading_connector/test_worker.py
+index 25bb664ff4..b4557bd7b6 100644
+--- a/tests/v1/kv_connector/unit/offloading_connector/test_worker.py
++++ b/tests/v1/kv_connector/unit/offloading_connector/test_worker.py
+@@ -125,8 +125,7 @@ def test_register_kv_caches(backend):
+     own dedicated tensors.
+ 
+     Uses the real GPUModelRunner.initialize_kv_cache_tensors to produce
+-    kv_caches, which automatically applies
+-    _update_hybrid_attention_mamba_layout for hybrid models.
++    the raw per-layer kv_caches registered by the connector.
+ 
+     Verifies that the canonicalized CanonicalKVCaches has the correct
+     block tensors, tensor_idx references, and page sizes across all groups.
+diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
+index 77f043ef52..ac8744d8c4 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/utils.py
++++ b/vllm/distributed/kv_transfer/kv_connector/utils.py
+@@ -21,12 +21,10 @@ from vllm.logger import init_logger
+ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+ from vllm.platforms import current_platform
+ from vllm.v1.attention.backend import AttentionBackend
+-from vllm.v1.kv_cache_interface import MambaSpec
+ from vllm.v1.outputs import KVConnectorOutput, ModelRunnerOutput
+ 
+ if TYPE_CHECKING:
+     from vllm.distributed.kv_transfer.kv_connector.base import KVConnectorBase
+-    from vllm.v1.kv_cache_interface import KVCacheSpec
+ 
+ logger = init_logger(__name__)
+ 
+@@ -594,32 +592,6 @@ class TransferTopology:
+         abs_ratio = -tp_ratio
+         return [self.tp_rank * abs_ratio + i for i in range(abs_ratio)]
+ 
+-    def get_transfer_cache_regions(
+-        self, cache: torch.Tensor, layer_spec: "KVCacheSpec"
+-    ) -> list[torch.Tensor] | torch.Tensor:
+-        """Return the cache tensor(s) to register as NIXL memory regions,
+-        also accounting for hybrid SSM models specificities.
+-        """
+-        if isinstance(layer_spec, MambaSpec):
+-            # Register the whole kv cache shared tensor, including
+-            # SSM/Conv.
+-            conv, ssm = cache
+-            return [conv]
+-
+-        # Check may be hacky but it's matching
+-        # `_update_hybrid_attention_mamba_layout`.
+-        if self.is_mamba and cache.shape[0] == 2:
+-            # When MAMBA is present, all backends are blocks first, so
+-            # that blocks can be shared between attention layers and mamba
+-            # layers.  Runner already adjusted strides for FlashAttn-like
+-            # backends so its num_blocks first.
+-            # Swap [2<>num_blocks] dims for hybrid SSM layout.
+-            cache = cache.transpose(0, 1)
+-
+-        # K and V are packed into one tensor (content dim), so each layer
+-        # registers as a single region.
+-        return [cache]
+-
+     def describe(self, remote_engine_id: EngineId, remote_pp_rank: int = 0) -> str:
+         """One-line summary of transfer config for logging."""
+         info = self._engines[(remote_engine_id, remote_pp_rank)]
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py
+index 34f99b7cfa..dd94ffb2f9 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py
+@@ -1678,9 +1678,9 @@ class MooncakeConnectorWorker:
+                 conv, _ = cache_or_caches
+                 cache_list = [conv]
+             else:
+-                cache_list = self.transfer_topo.get_transfer_cache_regions(
+-                    cache_or_caches, layer_spec
+-                )
++                # K and V are packed into one blocks-first tensor per layer,
++                # so each layer registers as a single region.
++                cache_list = [cache_or_caches]
+ 
+             logger.debug(
+                 "registering layer %s with %d cache tensor(s)",
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+index 4cdc54f7e7..a85704bc1d 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -1109,9 +1109,10 @@ class NixlBaseConnectorWorker:
+             if isinstance(layer_spec, UniformTypeKVCacheSpecs):
+                 # MLA DSv32 Indexer case: UniformTypeKVCacheSpecs merges kv_cache_specs
+                 layer_spec = layer_spec.kv_cache_specs[layer_name]
+-            cache_list = self.transfer_topo.get_transfer_cache_regions(
+-                cache_or_caches, layer_spec
+-            )
++            # K and V are packed into one tensor per layer, and Mamba layers
++            # expose a single combined conv/ssm page tensor, so each layer
++            # registers as a single region.
++            cache_list = [cache_or_caches]
+             # `layer_spec.page_size_bytes` only accounts for logical page_size, that is
+             # the page_size assuming constant `self._logical_num_blocks`.
+             physical_page_size = (
+@@ -1120,8 +1121,6 @@ class NixlBaseConnectorWorker:
+                 else layer_spec.page_size_bytes
+                 // self._physical_blocks_per_logical_kv_block
+             )
+-            # For when registering multiple tensors eg K/V in separate regions.
+-            physical_page_size = physical_page_size // len(cache_list)
+             if self.transfer_topo._cross_layers_blocks:
+                 # When cross-layers blocks are used, multiply by number of layers
+                 physical_page_size = physical_page_size * len(
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
+index 045e513c3f..a61ec91754 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
+@@ -56,9 +56,7 @@ class OffloadingConnectorWorker:
+     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
+         self.worker = self.spec.get_worker(kv_caches)
+ 
+-    def register_kv_caches(
+-        self, kv_caches: dict[str, torch.Tensor | list[torch.Tensor]]
+-    ):
++    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+         kv_cache_config = self.kv_cache_config
+         num_blocks = kv_cache_config.num_blocks
+ 
+@@ -120,24 +118,13 @@ class OffloadingConnectorWorker:
+                     )
+ 
+                 elif isinstance(layer_kv_cache_spec, MambaSpec):
+-                    state_tensors = kv_caches[layer_name]
+-                    assert isinstance(state_tensors, list)
+-
+-                    # re-construct the raw (num_blocks, page_size) tensor
+-                    # from the first state tensor
+-                    assert len(state_tensors) > 0
+-                    first_state_tensor = state_tensors[0]
+-                    assert first_state_tensor.storage_offset() == 0
+-                    tensor = (
+-                        torch.tensor(
+-                            [],
+-                            dtype=torch.int8,
+-                            device=first_state_tensor.device,
+-                        )
+-                        .set_(first_state_tensor.untyped_storage())
+-                        .view((num_blocks, layer_kv_cache_spec.page_size_bytes))
++                    layer_kv_cache = kv_caches[layer_name]
++                    assert layer_kv_cache.dtype == torch.int8
++                    tensors_per_block[layer_name] = (
++                        layer_kv_cache.view(
++                            num_blocks, layer_kv_cache_spec.page_size_bytes
++                        ),
+                     )
+-                    tensors_per_block[layer_name] = (tensor,)
+ 
+                     page_size_bytes[layer_name] = layer_kv_cache_spec.page_size_bytes
+                     unpadded_page_size_bytes[layer_name] = replace(
+diff --git a/vllm/model_executor/layers/attention_layer_base.py b/vllm/model_executor/layers/attention_layer_base.py
+index 5399411455..197213dc79 100644
+--- a/vllm/model_executor/layers/attention_layer_base.py
++++ b/vllm/model_executor/layers/attention_layer_base.py
+@@ -4,6 +4,8 @@
+ 
+ from abc import ABC, abstractmethod
+ 
++import torch
++
+ from vllm.config import VllmConfig
+ from vllm.v1.attention.backend import AttentionBackend, AttentionImpl
+ from vllm.v1.kv_cache_interface import KVCacheSpec
+@@ -21,6 +23,14 @@ class AttentionLayerBase(ABC):
+     impl: "AttentionImpl"
+     supports_dcp: bool = True
+ 
++    def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
++        """Bind the allocated KV cache tensor to this layer.
++
++        The default stores the cache view as-is; subclasses (e.g. Mamba)
++        override this to unpack the raw buffer into per-state views.
++        """
++        self.kv_cache = kv_cache
++
+     @abstractmethod
+     def get_attn_backend(self) -> type[AttentionBackend]:
+         """Get the attention backend class for this layer."""
+diff --git a/vllm/model_executor/layers/mamba/abstract.py b/vllm/model_executor/layers/mamba/abstract.py
+index 62fd64bd0d..d06916f697 100644
+--- a/vllm/model_executor/layers/mamba/abstract.py
++++ b/vllm/model_executor/layers/mamba/abstract.py
+@@ -2,11 +2,13 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ from abc import abstractmethod
+ from collections.abc import Iterable
++from math import prod
+ 
+ import torch
+ 
+ from vllm.config import VllmConfig
+ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
++from vllm.utils.torch_utils import get_dtype_size
+ from vllm.v1.attention.backend import AttentionBackend
+ from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
+ from vllm.v1.attention.selector import get_mamba_attn_backend
+@@ -24,6 +26,22 @@ class MambaBase(AttentionLayerBase):
+     kv_cache: tuple[torch.Tensor, ...]
+     supports_dcp: bool = False
+ 
++    def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
++        """Unpack a raw ``[B, 1, 1, C]`` int8 page view into per-state views.
++
++        Each block's ``C`` bytes hold the layer's states (e.g. conv, ssm)
++        packed contiguously; slice them out and reinterpret per dtype/shape.
++        """
++        pages = kv_cache.squeeze(dim=(1, 2))
++        states: list[torch.Tensor] = []
++        offset = 0
++        for shape, dtype in zip(self.get_state_shape(), self.get_state_dtype()):
++            nbytes = prod(shape) * get_dtype_size(dtype)
++            state = pages[:, offset : offset + nbytes].view(dtype)
++            states.append(state.view(-1, *shape))
++            offset += nbytes
++        self.kv_cache = tuple(states)
++
+     @abstractmethod
+     def get_state_shape(self) -> Iterable[tuple[int, ...]]:
+         """
+diff --git a/vllm/v1/worker/gpu/attn_utils.py b/vllm/v1/worker/gpu/attn_utils.py
+index a97a4e3959..f8d0ebc762 100644
+--- a/vllm/v1/worker/gpu/attn_utils.py
++++ b/vllm/v1/worker/gpu/attn_utils.py
+@@ -341,24 +341,15 @@ def _reshape_kv_cache(
+ 
+             elif isinstance(kv_cache_spec, MambaSpec):
+                 has_mamba = True
+-                state_tensors = []
+-                storage_offset_bytes = 0
+-                for shape, dtype in zip(kv_cache_spec.shapes, kv_cache_spec.dtypes):
+-                    dtype_size = get_dtype_size(dtype)
+-                    num_element_per_page = kv_cache_spec.page_size_bytes // dtype_size
+-                    target_shape = (num_blocks, *shape)
+-                    stride = torch.empty(target_shape).stride()
+-                    target_stride = (num_element_per_page, *stride[1:])
+-                    assert storage_offset_bytes % dtype_size == 0
+-                    tensor = torch.as_strided(
+-                        kv_raw_tensor.view(dtype),
+-                        size=target_shape,
+-                        stride=target_stride,
+-                        storage_offset=storage_offset_bytes // dtype_size,
+-                    )
+-                    state_tensors.append(tensor)
+-                    storage_offset_bytes += stride[0] * dtype_size
+-                kv_caches[layer_name] = state_tensors
++                page_size_bytes = kv_cache_spec.page_size_bytes
++                # Hold a single contiguous [num_blocks, 1, 1, page_size_bytes]
++                # int8 page view per layer; the layer's bind_kv_cache unpacks
++                # each block's bytes into its conv/ssm state views. Keeping
++                # one tensor per layer lets the KV connector register it
++                # without special-casing Mamba.
++                kv_caches[layer_name] = kv_raw_tensor[
++                    : num_blocks * page_size_bytes
++                ].view(num_blocks, 1, 1, page_size_bytes)
+             else:
+                 raise NotImplementedError(
+                     f"Unsupported KV cache spec type: {type(kv_cache_spec)}"
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 4f69e4aa82..2af5fd735a 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -126,7 +126,6 @@ from vllm.utils.torch_utils import (
+     PIN_MEMORY,
+     async_tensor_h2d,
+     current_stream,
+-    get_dtype_size,
+     is_quantized_kv_cache,
+     kv_cache_dtype_str_to_dtype,
+ )
+@@ -7382,27 +7381,15 @@ class GPUModelRunner(
+                 elif isinstance(kv_cache_spec, MambaSpec):
+                     has_mamba = True
+                     raw_tensor = kv_cache_raw_tensors[layer_name]
+-                    state_tensors = []
+-                    storage_offset_bytes = 0
+-                    for shape, dtype in zip(kv_cache_spec.shapes, kv_cache_spec.dtypes):
+-                        dtype_size = get_dtype_size(dtype)
+-                        num_element_per_page = (
+-                            kv_cache_spec.page_size_bytes // dtype_size
+-                        )
+-                        target_shape = (num_blocks, *shape)
+-                        stride = torch.empty(target_shape).stride()
+-                        target_stride = (num_element_per_page, *stride[1:])
+-                        assert storage_offset_bytes % dtype_size == 0
+-                        tensor = torch.as_strided(
+-                            raw_tensor.view(dtype),
+-                            size=target_shape,
+-                            stride=target_stride,
+-                            storage_offset=storage_offset_bytes // dtype_size,
+-                        )
+-                        state_tensors.append(tensor)
+-                        storage_offset_bytes += stride[0] * dtype_size
+-
+-                    kv_caches[layer_name] = state_tensors
++                    page_size_bytes = kv_cache_spec.page_size_bytes
++                    # Hold a single contiguous [num_blocks, 1, 1, page_size_bytes]
++                    # int8 page view per layer; the layer's bind_kv_cache unpacks
++                    # each block's bytes into its conv/ssm state views. Keeping
++                    # one tensor per layer lets the KV connector register it
++                    # without special-casing Mamba.
++                    kv_caches[layer_name] = raw_tensor[
++                        : num_blocks * page_size_bytes
++                    ].view(num_blocks, 1, 1, page_size_bytes)
+                 else:
+                     raise NotImplementedError
+ 
+diff --git a/vllm/v1/worker/utils.py b/vllm/v1/worker/utils.py
+index 9e60d2ae7f..fda37dcdab 100644
+--- a/vllm/v1/worker/utils.py
++++ b/vllm/v1/worker/utils.py
+@@ -533,9 +533,12 @@ def bind_kv_cache(
+         for layer_name in layer_names:
+             runner_kv_caches.append(kv_caches[layer_name])
+ 
+-    # Bind kv_caches to forward context
++    # Bind kv_caches to forward context. Each layer's bind_kv_cache unpacks
++    # its raw allocation into the per-layer view(s) it needs (e.g. Mamba
++    # splits conv/ssm), so the kv_caches dict can hold a single tensor per
++    # layer for the KV connector to register.
+     for layer_name, kv_cache in kv_caches.items():
+-        forward_context[layer_name].kv_cache = kv_cache
++        forward_context[layer_name].bind_kv_cache(kv_cache)
+ 
+ 
+ def copy_kv_cache_blocks_inplace(

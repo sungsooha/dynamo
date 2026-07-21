@@ -20,6 +20,12 @@ MARKER_GROUPS = {
         "precopy_src_col_buf",
         "HAS_IDX_MAPPING",
     ],
+    "pr44456_mamba_bind_kv_cache": [
+        "def bind_kv_cache",
+        "Unpack a raw",
+        "bind_kv_cache(kv_caches",
+        "without special-casing Mamba",
+    ],
 }
 
 
