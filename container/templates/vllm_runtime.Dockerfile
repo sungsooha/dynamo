@@ -171,8 +171,10 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # inherently GPL (no LGPL replacement), so the compliant fix is to not ship it.
 # (sglang_runtime.Dockerfile is the reference codec-compliance pattern.)
 RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    # umbriel's Docker APT _apt sandbox cannot verify otherwise-valid InRelease files;
+    # retain signature verification and bypass only the broken privilege-drop here.
+    apt-get -o APT::Sandbox::User=root update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
         jq; \
     rm -rf /var/lib/apt/lists/*
 
