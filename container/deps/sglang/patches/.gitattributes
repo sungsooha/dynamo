@@ -1,0 +1,2 @@
+# Preserve supplied patch context byte-for-byte; its SHA256 is build provenance.
+**/*.patch -whitespace

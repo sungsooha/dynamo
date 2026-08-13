@@ -10,7 +10,7 @@
 {% if device == "xpu" %}
 FROM framework AS runtime
 {% else %}
-FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
+FROM ${RUNTIME_IMAGE}${RUNTIME_IMAGE_TAG} AS pre_runtime
 {% endif %}
 
 ARG MODELEXPRESS_VERSION
@@ -86,6 +86,31 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages --no-deps \
         /opt/dynamo/wheelhouse/ai_dynamo_runtime*.whl \
         /opt/dynamo/wheelhouse/ai_dynamo*any.whl
+
+# The Muse preview base needs NIXL 1.3.1.  Do not install the ai-dynamo SGLang
+# extra here: it would resolve and replace the pinned preview engine.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    export PIP_CACHE_DIR=/root/.cache/pip && \
+    pip install --break-system-packages --no-deps "nixl==1.3.1"
+
+# Minimal Muse delivery overlays.  0002 is required only because this recipe
+# deliberately keeps FPM telemetry on; 0005 is required by the structured-output
+# P0 gate.  Speculative-only 0004 and 0006 are intentionally not vendored.
+RUN --mount=type=bind,source=./container/deps/sglang/patches/0.0.0.dev1+g7c90840ba/muse-glimmer,target=/tmp/muse-sglang-patches,readonly \
+    --mount=type=bind,source=./container/deps/sglang/validate_muse_glimmer_runtime.py,target=/tmp/validate_muse_glimmer_runtime.py,readonly \
+    set -eux; \
+    installed_dynamo_version="$(python3 -c 'import importlib.metadata as md; print(md.version("ai-dynamo"))')"; \
+    test "${installed_dynamo_version}" = "1.4.0.dev20260810"; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch; \
+    dynamo_root="$(python3 -c 'import pathlib, dynamo; print(pathlib.Path(dynamo.__file__).resolve().parent)')"; \
+    for patch_file in /tmp/muse-sglang-patches/0002-*.patch /tmp/muse-sglang-patches/0005-*.patch; do \
+        patch --dry-run --batch --forward --fuzz=0 -p4 -d "${dynamo_root}" < "${patch_file}"; \
+        patch --batch --forward --fuzz=0 -p4 -d "${dynamo_root}" < "${patch_file}"; \
+    done; \
+    apt-get purge -y patch; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 /tmp/validate_muse_glimmer_runtime.py
 
 # Install accelerate for diffusion/video worker pipelines (diffusers requires it
 # for enable_model_cpu_offload but the upstream SGLang runtime image omits it)

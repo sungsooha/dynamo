@@ -1,0 +1,14 @@
+--- a/components/src/dynamo/frontend/sglang_prepost.py
++++ b/components/src/dynamo/frontend/sglang_prepost.py
+@@ -306,5 +306,8 @@ def create_parsers(
+     reasoning_parser = None
+-    guided_decoding_active = tool_choice == "required" or _is_named_tool_choice(
+-        tool_choice
+-    )
++    # response_format grammar output has no Muse channel markers. Keep Muse
++    # parsing for ordinary requests, but return constrained JSON as content.
++    response_format_active = isinstance(request.get("response_format"), dict)
++    guided_decoding_active = response_format_active or tool_choice == "required" or _is_named_tool_choice(
++        tool_choice
++    )
+     if reasoning_parser_name and (not guided_decoding_active or force_reasoning):
