@@ -24,7 +24,7 @@ MARKERS = {
 
 
 def main() -> None:
-    root = Path(dynamo.__file__).resolve().parent
+    root = Path(dynamo.__path__[0])
     missing: dict[str, str] = {}
     evidence: dict[str, str | None] = {}
     for name, (relative, marker) in MARKERS.items():
