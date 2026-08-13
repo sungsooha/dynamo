@@ -103,7 +103,7 @@ RUN --mount=type=bind,source=./container/deps/sglang/patches/0.0.0.dev1+g7c90840
     test "${installed_dynamo_version}" = "1.4.0.dev20260810"; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch; \
-    dynamo_root="$(python3 -c 'import pathlib, dynamo; print(pathlib.Path(dynamo.__file__).resolve().parent)')"; \
+    dynamo_root="$(python3 -c 'import dynamo; print(dynamo.__path__[0])')"; \
     for patch_file in /tmp/muse-sglang-patches/0002-*.patch /tmp/muse-sglang-patches/0005-*.patch; do \
         patch --dry-run --batch --forward --fuzz=0 -p4 -d "${dynamo_root}" < "${patch_file}"; \
         patch --batch --forward --fuzz=0 -p4 -d "${dynamo_root}" < "${patch_file}"; \
