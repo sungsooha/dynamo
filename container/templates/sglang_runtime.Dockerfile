@@ -93,6 +93,22 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps "nixl==1.3.1"
 
+# The slim SGLang preview base intentionally omits the CUDA compiler.  Muse on
+# B200 JIT-compiles its CUDA-graph warmup kernels through tvm_ffi, so retaining
+# the renderer-selected CUDA 13.0 compiler and development headers is a runtime
+# requirement, not a build convenience.  Keep this tied to the base's 13.0
+# family; do not change CUDA-graph behavior or upgrade the toolkit here.
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cuda-nvcc-13-0 \
+        cuda-cudart-dev-13-0; \
+    test -x /usr/local/cuda/bin/nvcc; \
+    /usr/local/cuda/bin/nvcc --version | grep -F 'release 13.0'; \
+    dpkg-query -W -f='${Package}\\t${Version}\\n' \
+        cuda-nvcc-13-0 cuda-cudart-dev-13-0; \
+    rm -rf /var/lib/apt/lists/*
+
 # Minimal Muse delivery overlays.  0002 is required only because this recipe
 # deliberately keeps FPM telemetry on; 0005 is required by the structured-output
 # P0 gate.  Speculative-only 0004 and 0006 are intentionally not vendored.
