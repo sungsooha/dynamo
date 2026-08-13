@@ -193,6 +193,11 @@ RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tm
 # equivalent purge in vllm_runtime.Dockerfile.
 {% if device == "cuda" %}
 RUN set -eux; \
+    # The preview SGLang base owns these two license-restricted libraries as
+    # apt packages (not Python wheel payloads), so remove them before the
+    # permanent final codec guard scans the runtime filesystem.
+    apt-get purge -y libx264-164 libx265-199; \
+    apt-get autoremove -y; \
     python3 -m pip uninstall --yes \
         av \
         decord \
@@ -228,7 +233,8 @@ RUN set -eux; \
         /usr/local/lib/pkgconfig/libsw*.pc \
         /usr/local/src/ffmpeg \
         /root/.cache/pip; \
-    ldconfig
+    ldconfig; \
+    python3 -c 'import soundfile, torchaudio; from PIL import Image'
 {% endif %}
 
 {% if device == "cuda" %}
