@@ -70,7 +70,7 @@ RUN pip install --require-hashes --no-deps -r /tmp/requirements.lock \\
       echo "FATAL: layer introduced new pip-check failure"; exit 1; fi; } \\
  && python3 -c "import vllm; assert vllm.__version__ == '${EXPECTED_VLLM_VERSION}', vllm.__version__" \\
  && python3 -c "import dynamo.vllm.main, dynamo.vllm.instrumented_scheduler" \\
- && VLLM_TARGET_DEVICE=cpu python3 -m dynamo.vllm --help >/dev/null \\
+ && VLLM_TARGET_DEVICE=cpu python3 -c 'import sys; import vllm.platforms as platforms; from vllm.platforms.cpu import CpuPlatform; platforms.current_platform = CpuPlatform(); sys.argv = ["dynamo.vllm", "--help"]; from dynamo.vllm.main import main; main()' >/dev/null \\
  && rm -rf /workspace/vllm \\
  && pip freeze > /opt/inkling-vllm027-post-freeze.txt
 USER 1000:0
@@ -91,9 +91,13 @@ docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash "${TARGET_IMAGE}
   pip show vllm ai-dynamo ai-dynamo-runtime
   python3 -c "import vllm, dynamo.vllm; print(vllm.__version__)"
 ' | tee "${OUT}/in-image-provenance.txt"
+docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash "${TARGET_IMAGE}" -lc '
+  test -z "${VLLM_TARGET_DEVICE:-}"
+  python3 -c "import torch; from vllm import envs; assert torch.version.cuda, torch.version.cuda; assert envs.VLLM_TARGET_DEVICE == \"cuda\", envs.VLLM_TARGET_DEVICE; print(f\"CUDA_TARGET_ASSERTION PASS torch_cuda={torch.version.cuda} vllm_default_target={envs.VLLM_TARGET_DEVICE}\")"
+' | tee "${OUT}/cuda-target-assertion.txt"
 
 printf 'patches: []\nreason: released-vllm-base-and-released-ai-dynamo-package; no source overlay\n' > "${OUT}/patches/stack.yaml"
-(cd "${OUT}" && sha256sum Dockerfile requirements-vllm027-dynamo14.in requirements-vllm027-dynamo14.lock patches/stack.yaml manifests/pre.txt manifests/post.txt manifests/resolve-report.json) > "${OUT}/patch-manifest.sha256"
+(cd "${OUT}" && sha256sum Dockerfile requirements-vllm027-dynamo14.in requirements-vllm027-dynamo14.lock patches/stack.yaml manifests/pre.txt manifests/post.txt manifests/resolve-report.json cuda-target-assertion.txt) > "${OUT}/patch-manifest.sha256"
 
 docker push "${TARGET_IMAGE}"
 IMAGE_DIGEST="$(docker manifest inspect -v "${TARGET_IMAGE}" | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("Descriptor",{}).get("digest") or d.get("descriptor",{}).get("digest", ""))')"
@@ -119,13 +123,24 @@ contract = {
     "verdict": "SOURCE_COMPATIBLE", "runtime_verified": False
   },
   "base_preserved_transport": {"nixl": os.environ["BASE_NIXL"], "reason": "base-constrained; do not override the digest-pinned transport ABI"},
+  "build_validation": {
+    "cli_help": {
+      "command_environment": "VLLM_TARGET_DEVICE=cpu (inline invocation only)",
+      "reason": "the build node is deliberately gpu:0; vLLM parser construction otherwise cannot detect a device",
+      "platform_override": "in-process CpuPlatform for this help-only validation; no Dockerfile ENV, build arg, or persisted target override"
+    },
+    "cuda_target_assertion": {
+      "file": "cuda-target-assertion.txt", "sha256": sha("cuda-target-assertion.txt"),
+      "required": "final image has no VLLM_TARGET_DEVICE environment override, torch.version.cuda is nonempty, and vLLM default target resolves to cuda"
+    }
+  },
   "lock": {"file": "requirements-vllm027-dynamo14.lock", "sha256": sha("requirements-vllm027-dynamo14.lock")},
   "resolver_report": {"file": "manifests/resolve-report.json", "sha256": sha("manifests/resolve-report.json")},
   "patch_stack": [], "patch_manifest": {"file": "patch-manifest.sha256", "sha256": sha("patch-manifest.sha256")},
   "run_id": os.environ["RUN_ID"], "run_dir": str(out),
   "output": {"image_repo": "nvcr.io/nvstaging/nim/sungsooh", "image_version": "inkling-gb300-vllm027-v1", "image_ref": "nvcr.io/nvstaging/nim/sungsooh:inkling-gb300-vllm027-v1", "image_digest": os.environ["IMAGE_DIGEST"], "image_digest_ref": "nvcr.io/nvstaging/nim/sungsooh@" + os.environ["IMAGE_DIGEST"], "published": True, "serve_verified": False},
   "smoke": {"required": True, "status": "NOT_RUN", "upgrade_condition": "digest-pinned GB300 Service-DNS models 200 plus nonempty chat 200 with hashed artifacts"},
-  "artifact_sha256": {name: sha(name) for name in ["Dockerfile", "requirements-vllm027-dynamo14.in", "requirements-vllm027-dynamo14.lock", "patches/stack.yaml", "patch-manifest.sha256", "in-image-provenance.txt"]}
+  "artifact_sha256": {name: sha(name) for name in ["Dockerfile", "requirements-vllm027-dynamo14.in", "requirements-vllm027-dynamo14.lock", "patches/stack.yaml", "patch-manifest.sha256", "in-image-provenance.txt", "cuda-target-assertion.txt"]}
 }
 (out / "build-contract.json").write_text(json.dumps(contract, indent=2) + "\n")
 PY
