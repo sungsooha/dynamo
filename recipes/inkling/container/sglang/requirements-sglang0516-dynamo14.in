@@ -4,5 +4,6 @@ ai-dynamo==1.4.0
 accelerate>=0.17.0
 blake3>=1.0.0,<2.0.0
 cupy-cuda12x>=13.0.0
-nixl[cu13]
+# The base already supplies the transport ABI. Do not resolve a second NIXL
+# distribution through the companion closure.
 uvloop

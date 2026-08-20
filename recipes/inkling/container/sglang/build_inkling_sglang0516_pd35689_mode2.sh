@@ -50,6 +50,8 @@ docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash -v "${CTX}:/out"
 cp "${CTX}/pre.txt" "${OUT}/manifests/pre.txt"
 cp "${CTX}/pipcheck-before.txt" "${OUT}/"
 cp "${CTX}/base-engine-constraints.txt" "${OUT}/manifests/"
+BASE_NIXL="$(awk -F== 'tolower($1)=="nixl" {print $2; exit}' "${OUT}/manifests/pre.txt")"
+[[ -n "${BASE_NIXL}" ]] || { echo "FATAL: pinned base is missing nixl transport"; exit 1; }
 
 docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash \
   -v "${CTX}:/out" -v "${REQUIREMENTS_IN}:/inputs/requirements.in:ro" "${BASE_REF}" -lc '
@@ -74,8 +76,8 @@ RUN pip install --require-hashes --no-deps -r /tmp/requirements.lock \\
  && { pip check > /tmp/pipcheck-after.txt 2>&1 || true; } \\
  && { if comm -13 <(sort -u /tmp/pipcheck-before.txt) <(sort -u /tmp/pipcheck-after.txt) | grep -q .; then \\
       echo "FATAL: layer introduced new pip-check failure"; exit 1; fi; } \\
- && patch --batch --forward --dry-run -p2 -d /usr/local/lib/python3.12/dist-packages < /tmp/pd35689.patch \\
- && patch --batch --forward -p2 -d /usr/local/lib/python3.12/dist-packages < /tmp/pd35689.patch \\
+ && patch --batch --forward --dry-run -p2 -d /sgl-workspace/sglang/python < /tmp/pd35689.patch \\
+ && patch --batch --forward -p2 -d /sgl-workspace/sglang/python < /tmp/pd35689.patch \\
  && python3 -c "import sglang; assert sglang.__version__ == '${EXPECTED_SGLANG_VERSION}', sglang.__version__" \\
  && python3 -m unittest -v /tmp/test_mamba_state_transfer_buffers.py \\
  && python3 -c "import dynamo.sglang; print('dynamo.sglang import PASS')" \\
@@ -121,7 +123,7 @@ IMAGE_DIGEST="$(docker manifest inspect -v "${TARGET_IMAGE}" | python3 -c 'impor
 printf '%s@%s\n' "${IMAGE_REPO}" "${IMAGE_DIGEST}" | tee "${OUT}/image-digest.txt"
 
 RUN_COMMIT="$(git rev-parse HEAD)"
-export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST
+export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST BASE_NIXL
 python3 - <<'PY'
 import hashlib
 import json
@@ -136,6 +138,7 @@ contract = {
   "base": {"tag": "lmsysorg/sglang:v0.5.16-cu130-runtime", "digest": "sha256:f082dfc7e734f1956e9a023157c5a82d7c1ebe0cd689dcad7163f4f57ebc2e60", "ref": "lmsysorg/sglang@sha256:f082dfc7e734f1956e9a023157c5a82d7c1ebe0cd689dcad7163f4f57ebc2e60", "sglang_source_commit": "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1"},
   "platform": "linux/arm64", "target_arch": "aarch64",
   "dependency_pin_override": {"declared": "ai-dynamo[sglang]==1.4.0 requires sglang[diffusion]==0.5.16", "used": "ai-dynamo==1.4.0 plus SGLang-extra companions excluding the engine line; digest-pinned base retains sglang 0.5.16", "verdict": "PIN_SATISFIED_NO_OVERRIDE", "runtime_verified": False},
+  "base_preserved_transport": {"nixl": os.environ["BASE_NIXL"], "reason": "base-provided transport retained; SGLang extra NIXL companion omitted"},
   "patch_stack": [{"order": 10, "name": "pd35689-skip-empty-linear-state", "upstream_commit": "ba97cc6397ac98b0d889609598cc18ad365d462c", "backport_commit": "ac019b014d33cbca63b062f86ac6978e7a7acb3c", "patch_file": "patches/0001-pd35689-skip-empty-linear-state.runtime.patch", "patch_sha256": sha("patches/0001-pd35689-skip-empty-linear-state.runtime.patch"), "scope": "P/D temporal-state RDMA registration only; AGG unchanged"}],
   "lock": {"file": "requirements-sglang0516-dynamo14.lock", "sha256": sha("requirements-sglang0516-dynamo14.lock")},
   "resolver_report": {"file": "manifests/resolve-report.json", "sha256": sha("manifests/resolve-report.json")},
