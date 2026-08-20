@@ -46,6 +46,8 @@ docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash -v "${CTX}:/out"
 cp "${CTX}/pre.txt" "${OUT}/manifests/pre.txt"
 cp "${CTX}/pipcheck-before.txt" "${OUT}/manifests/"
 cp "${CTX}/base-engine-constraints.txt" "${OUT}/manifests/"
+BASE_NIXL="$(awk -F== 'tolower($1)=="nixl" {print $2; exit}' "${OUT}/manifests/pre.txt")"
+[[ -n "${BASE_NIXL}" ]] || { echo "FATAL: pinned base is missing nixl transport"; exit 1; }
 
 docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash \
   -v "${CTX}:/out" -v "${REQUIREMENTS_IN}:/inputs/requirements.in:ro" "${BASE_REF}" -lc '
@@ -99,7 +101,7 @@ IMAGE_DIGEST="$(docker manifest inspect -v "${TARGET_IMAGE}" | python3 -c 'impor
 printf '%s@%s\n' "${IMAGE_REPO}" "${IMAGE_DIGEST}" | tee "${OUT}/image-digest.txt"
 
 RUN_COMMIT="$(git rev-parse HEAD)"
-export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST
+export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST BASE_NIXL
 python3 - <<'PY'
 import hashlib, json, os
 from pathlib import Path
@@ -112,10 +114,11 @@ contract = {
   "platform": "linux/arm64", "target_arch": "aarch64",
   "dependency_pin_override": {
     "declared": "ai-dynamo[vllm]==1.4.0 requires vllm[flashinfer,otel,runai]==0.26.0",
-    "used": "ai-dynamo==1.4.0 plus the vllm-extra companion requirements excluding its vllm line, resolved under base engine/CUDA constraints",
+    "used": "ai-dynamo==1.4.0 plus the vllm-extra companion requirements excluding its vllm line, resolved under base engine/CUDA constraints; NIXL is intentionally unpinned and retained from the base",
     "abi_evidence": "33/33 direct modules and 54/54 named imports present at vLLM 0.26.0 and 0.27.0; used changes are backward-compatible optional additions; Dynamo later v0.27.1 bump required only a contract test",
     "verdict": "SOURCE_COMPATIBLE", "runtime_verified": False
   },
+  "base_preserved_transport": {"nixl": os.environ["BASE_NIXL"], "reason": "base-constrained; do not override the digest-pinned transport ABI"},
   "lock": {"file": "requirements-vllm027-dynamo14.lock", "sha256": sha("requirements-vllm027-dynamo14.lock")},
   "resolver_report": {"file": "manifests/resolve-report.json", "sha256": sha("manifests/resolve-report.json")},
   "patch_stack": [], "patch_manifest": {"file": "patch-manifest.sha256", "sha256": sha("patch-manifest.sha256")},
