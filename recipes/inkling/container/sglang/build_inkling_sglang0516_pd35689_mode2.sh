@@ -79,7 +79,7 @@ RUN pip install --require-hashes --no-deps -r /tmp/requirements.lock \\
  && patch --batch --forward --dry-run -p2 -d /sgl-workspace/sglang/python < /tmp/pd35689.patch \\
  && patch --batch --forward -p2 -d /sgl-workspace/sglang/python < /tmp/pd35689.patch \\
  && python3 -c "import sglang; assert sglang.__version__ == '${EXPECTED_SGLANG_VERSION}', sglang.__version__" \\
- && python3 -m unittest -v /tmp/test_mamba_state_transfer_buffers.py \\
+ && python3 /tmp/test_mamba_state_transfer_buffers.py \\
  && python3 -c "import dynamo.sglang; print('dynamo.sglang import PASS')" \\
  && pip freeze > /opt/inkling-sglang-pd35689-post-freeze.txt
 USER 1000:0
