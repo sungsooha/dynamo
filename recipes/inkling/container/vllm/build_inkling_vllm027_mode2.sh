@@ -70,7 +70,7 @@ RUN pip install --require-hashes --no-deps -r /tmp/requirements.lock \\
       echo "FATAL: layer introduced new pip-check failure"; exit 1; fi; } \\
  && python3 -c "import vllm; assert vllm.__version__ == '${EXPECTED_VLLM_VERSION}', vllm.__version__" \\
  && python3 -c "import dynamo.vllm.main, dynamo.vllm.instrumented_scheduler" \\
- && python3 -m dynamo.vllm --help >/dev/null \\
+ && VLLM_TARGET_DEVICE=cpu python3 -m dynamo.vllm --help >/dev/null \\
  && rm -rf /workspace/vllm \\
  && pip freeze > /opt/inkling-vllm027-post-freeze.txt
 USER 1000:0
