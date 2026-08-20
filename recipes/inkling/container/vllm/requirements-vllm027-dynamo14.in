@@ -3,9 +3,9 @@
 ai-dynamo==1.4.0
 blake3>=1.0.0,<2.0.0
 librosa>=0.10.0
-# Preserve the digest-pinned base transport release. A fixed NIXL version here
-# may be newer than, and therefore conflict with, the base ABI.
-nixl[cu13]
+# NIXL and its CUDA transport packages come only from the digest-pinned base.
+# The lock renderer excludes any resolver-proposed replacement so the Mode-2
+# layer cannot downgrade a base transport ABI.
 ray>=2.55.0
 soundfile>=0.13.1
 uvloop

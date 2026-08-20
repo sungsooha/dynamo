@@ -47,14 +47,21 @@ cp "${CTX}/pre.txt" "${OUT}/manifests/pre.txt"
 cp "${CTX}/pipcheck-before.txt" "${OUT}/manifests/"
 cp "${CTX}/base-engine-constraints.txt" "${OUT}/manifests/"
 BASE_NIXL="$(awk -F== 'tolower($1)=="nixl" {print $2; exit}' "${OUT}/manifests/pre.txt")"
-[[ -n "${BASE_NIXL}" ]] || { echo "FATAL: pinned base is missing nixl transport"; exit 1; }
+BASE_NIXL_CU13="$(awk -F== 'tolower($1)=="nixl-cu13" {print $2; exit}' "${OUT}/manifests/pre.txt")"
+BASE_NCCL_CU13="$(awk -F== 'tolower($1)=="nvidia-nccl-cu13" {print $2; exit}' "${OUT}/manifests/pre.txt")"
+[[ -n "${BASE_NIXL}" && -n "${BASE_NIXL_CU13}" && -n "${BASE_NCCL_CU13}" ]] || { echo "FATAL: pinned base is missing NIXL/NCCL transport packages"; exit 1; }
 
 docker run --rm --platform "${PLATFORM}" --entrypoint /bin/bash \
   -v "${CTX}:/out" -v "${REQUIREMENTS_IN}:/inputs/requirements.in:ro" "${BASE_REF}" -lc '
     pip install --dry-run --report /out/resolve-report.json \
       --constraint /out/base-engine-constraints.txt -r /inputs/requirements.in
   '
-python3 "${LOCK_RENDERER}" "${CTX}/resolve-report.json" "${CTX}/requirements.lock"
+MODE2_EXCLUDE_PACKAGES='nixl,nixl-cu12,nixl-cu13,nvidia-nccl-cu13' \
+  python3 "${LOCK_RENDERER}" "${CTX}/resolve-report.json" "${CTX}/requirements.lock"
+if grep -qE '^(nixl|nixl-cu12|nixl-cu13|nvidia-nccl-cu13)==' "${CTX}/requirements.lock"; then
+  echo "FATAL: transport replacement leaked into the Mode-2 lock"
+  exit 1
+fi
 cp "${CTX}/resolve-report.json" "${OUT}/manifests/"
 cp "${CTX}/requirements.lock" "${OUT}/requirements-vllm027-dynamo14.lock"
 cp "${REQUIREMENTS_IN}" "${OUT}/requirements-vllm027-dynamo14.in"
@@ -105,7 +112,7 @@ IMAGE_DIGEST="$(docker manifest inspect -v "${TARGET_IMAGE}" | python3 -c 'impor
 printf '%s@%s\n' "${IMAGE_REPO}" "${IMAGE_DIGEST}" | tee "${OUT}/image-digest.txt"
 
 RUN_COMMIT="$(git rev-parse HEAD)"
-export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST BASE_NIXL
+export OUT RUN_ID RUN_COMMIT IMAGE_DIGEST BASE_NIXL BASE_NIXL_CU13 BASE_NCCL_CU13
 python3 - <<'PY'
 import hashlib, json, os
 from pathlib import Path
@@ -122,7 +129,11 @@ contract = {
     "abi_evidence": "33/33 direct modules and 54/54 named imports present at vLLM 0.26.0 and 0.27.0; used changes are backward-compatible optional additions; Dynamo later v0.27.1 bump required only a contract test",
     "verdict": "SOURCE_COMPATIBLE", "runtime_verified": False
   },
-  "base_preserved_transport": {"nixl": os.environ["BASE_NIXL"], "reason": "base-constrained; do not override the digest-pinned transport ABI"},
+  "base_preserved_transport": {
+    "nixl": os.environ["BASE_NIXL"], "nixl_cu13": os.environ["BASE_NIXL_CU13"], "nvidia_nccl_cu13": os.environ["BASE_NCCL_CU13"],
+    "lock_exclusions": ["nixl", "nixl-cu12", "nixl-cu13", "nvidia-nccl-cu13"],
+    "reason": "base-constrained; the resolver may propose older transitive transport packages, but the digest-pinned ABI is retained verbatim"
+  },
   "build_validation": {
     "cli_help": {
       "command_environment": "VLLM_TARGET_DEVICE=cpu (inline invocation only)",
