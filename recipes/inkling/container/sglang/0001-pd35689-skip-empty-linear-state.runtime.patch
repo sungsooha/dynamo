@@ -1,0 +1,28 @@
+diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
+index 5c951f811..8cab01654 100644
+--- a/python/sglang/srt/mem_cache/memory_pool.py
++++ b/python/sglang/srt/mem_cache/memory_pool.py
+@@ -1006,4 +1006,5 @@ class MambaPool:
+-            if isinstance(value, list):
+-                state_tensors.extend(value)
+-            else:
+-                state_tensors.append(value)
++            tensors = value if isinstance(value, list) else [value]
++            # Backport of SGLang PR 35689 to v0.5.16: ShortConv has no
++            # temporal state, so it allocates an empty tensor. Never
++            # advertise a zero-byte state buffer to RDMA registration.
++            state_tensors.extend(tensor for tensor in tensors if tensor.numel())
+@@ -1050,4 +1051,3 @@ class MambaPool:
+-            if isinstance(value, list):
+-                state_tensors.extend(value)
+-            else:
+-                state_tensors.append(value)
++            tensors = value if isinstance(value, list) else [value]
++            # Keep this parallel list aligned with get_contiguous_buf_infos.
++            state_tensors.extend(tensor for tensor in tensors if tensor.numel())
+@@ -1091 +1091,4 @@ class MambaPool:
+-            for _ in tensors:
++            for tensor in tensors:
++                # Keep this parallel list aligned with the registered buffers.
++                if tensor.numel() == 0:
++                    continue

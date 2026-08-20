@@ -1,0 +1,8 @@
+# ai-dynamo 1.4.0's SGLang extra without its engine pin. The digest-pinned
+# v0.5.16 base supplies the engine; this preserves the declared engine version.
+ai-dynamo==1.4.0
+accelerate>=0.17.0
+blake3>=1.0.0,<2.0.0
+cupy-cuda12x>=13.0.0
+nixl[cu13]
+uvloop
